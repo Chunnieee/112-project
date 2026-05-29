@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Risk-Aware OSM Navigation</title>
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      font-family: Arial, sans-serif;
+    }
+
+    #map {
+      width: 100%;
+      height: 100vh;
+    }
+
+    #controlPanel {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      z-index: 1000;
+      background: white;
+      padding: 16px;
+      border-radius: 14px;
+      box-shadow: 0 3px 14px rgba(0, 0, 0, 0.28);
+      width: 350px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    h3 {
+      margin-top: 0;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
+    input {
+      width: 100%;
+      padding: 9px;
+      margin-bottom: 8px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 7px;
+      font-size: 14px;
+    }
+
+    button {
+      width: 100%;
+      padding: 9px;
+      background-color: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    button:hover {
+      background-color: #1d4ed8;
+    }
+
+    .secondaryBtn {
+      background-color: #475569;
+    }
+
+    .secondaryBtn:hover {
+      background-color: #334155;
+    }
+
+    #status {
+      font-size: 14px;
+      line-height: 1.5;
+      margin: 8px 0;
+    }
+
+    .routeCard {
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 10px;
+      margin-top: 10px;
+      background: #fafafa;
+      cursor: pointer;
+    }
+
+    .routeCard:hover {
+      background: #eef4ff;
+    }
+
+    .routeCard.selected {
+      border: 2px solid #2563eb;
+      background: #eef4ff;
+    }
+
+    .routeTitle {
+      font-weight: bold;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 3px 6px;
+      border-radius: 999px;
+      background: #e0e7ff;
+      color: #1e3a8a;
+    }
+
+    .metric {
+      font-size: 13px;
+      margin: 3px 0;
+    }
+
+    .trafficMetric {
+      font-size: 13px;
+      margin: 3px 0;
+      color: #b45309;
+    }
+
+    .recommendBox {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #ecfdf5;
+      border: 1px solid #86efac;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .warningBox {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #7c2d12;
+    }
+
+    .smallText {
+      font-size: 12px;
+      color: gray;
+      line-height: 1.4;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="controlPanel">
+    <h3>Risk-Aware Navigation</h3>
+
+    <div class="subtitle">
+      顯示 Base OSRM Time、Traffic-adjusted Expected Time、Worst 10%、Variance、Stability Score。<br />
+      路線由你的 Backend → 自架 OSRM → 台灣 OSM 資料計算。
+    </div>
+
+    <input id="startInput" type="text" placeholder="起點，例如：台北車站, 台北, 台灣" />
+    <input id="endInput" type="text" placeholder="終點，例如：台北101, 台北, 台灣" />
+
+    <button onclick="useMyLocation()">使用我的位置當起點</button>
+    <button onclick="calculateRoute()">規劃風險路線</button>
+    <button class="secondaryBtn" onclick="clearRoutes()">清除路線</button>
+
+    <div id="status">請輸入起點與終點。</div>
+
+    <div id="recommendationBox"></div>
+
+    <div id="routeList"></div>
+
+    <div class="warningBox">
+      目前 Risk Model 是 prototype demo：OSRM 原始時間會再加入 traffic adjustment factor，
+      讓預估時間更接近真實交通。未來可接入歷史交通資料來計算真實 variance。
+    </div>
+
+    <div class="smallText">
+      Frontend：Leaflet + OSM<br />
+      Backend：http://localhost:3000<br />
+      Routing：Self-hosted OSRM http://localhost:5000
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Your JS -->
+  <script src="app.js?v=30"></script>
+</body>
+</html>
