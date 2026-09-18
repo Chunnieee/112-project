@@ -1,88 +1,160 @@
-export function getTimeOfDayTrafficFactor() {
-  const now = new Date();
-  const hour = now.getHours();
-  const day = now.getDay();
+const DEFAULT_TIME_ZONE = "Asia/Taipei";
 
-  const isWeekend = day === 0 || day === 6;
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getLocalParts(date = new Date(), timeZone = DEFAULT_TIME_ZONE) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    weekday: parts.weekday,
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+function parseClock(value) {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+
+  if (
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    return null;
+  }
+
+  return { hour, minute };
+}
+
+function minuteOfDay(hour, minute) {
+  return hour * 60 + minute;
+}
+
+function inRange(current, startHour, startMinute, endHour, endMinute) {
+  const start = minuteOfDay(startHour, startMinute);
+  const end = minuteOfDay(endHour, endMinute);
+  return current >= start && current < end;
+}
+
+/**
+ * A deliberately mild time-of-day prior.
+ *
+ * OSRM already has road-class-based travel times. The old model multiplied every
+ * route by 1.35-1.45 during peaks, which made city trips wildly inaccurate.
+ * This function now only supplies a small prior for the part of a route that
+ * does not have route-specific TDX traffic coverage.
+ */
+export function getTimeOfDayTrafficFactor({
+  departureTime = null,
+  date = new Date(),
+  timeZone = DEFAULT_TIME_ZONE,
+} = {}) {
+  const local = getLocalParts(date, timeZone);
+  const requested = parseClock(departureTime);
+
+  const hour = requested?.hour ?? local.hour;
+  const minute = requested?.minute ?? local.minute;
+  const current = minuteOfDay(hour, minute);
+
+  const isWeekend = local.weekday === "Sat" || local.weekday === "Sun";
+
+  let factor = 1.03;
+  let level = "Normal Traffic Prior";
+  let description = "Mild Taiwan weekday traffic prior";
+  let isPeak = false;
 
   if (isWeekend) {
-    if (hour >= 11 && hour < 20) {
-      return {
-        factor: 1.2,
-        level: "Weekend Traffic",
-        description: "Weekend daytime traffic adjustment"
-      };
+    if (inRange(current, 11, 0, 20, 0)) {
+      factor = 1.06;
+      level = "Weekend Daytime Prior";
+      description = "Mild weekend daytime traffic prior";
+    } else {
+      factor = 1.01;
+      level = "Weekend Light Prior";
+      description = "Very small weekend traffic prior";
     }
-
-    return {
-      factor: 1.1,
-      level: "Weekend Low Traffic",
-      description: "Weekend low traffic adjustment"
-    };
-  }
-
-  if (hour >= 7 && hour < 10) {
-    return {
-      factor: 1.35,
-      level: "Morning Peak",
-      description: "Weekday morning peak traffic"
-    };
-  }
-
-  if (hour >= 17 && hour < 20) {
-    return {
-      factor: 1.45,
-      level: "Evening Peak",
-      description: "Weekday evening peak traffic"
-    };
-  }
-
-  if (hour >= 11 && hour < 14) {
-    return {
-      factor: 1.2,
-      level: "Midday Traffic",
-      description: "Weekday midday traffic"
-    };
-  }
-
-  if (hour >= 0 && hour < 6) {
-    return {
-      factor: 1.05,
-      level: "Low Traffic",
-      description: "Late night or early morning low traffic"
-    };
+  } else if (inRange(current, 7, 0, 9, 30)) {
+    factor = 1.12;
+    level = "Morning Peak Prior";
+    description = "Mild weekday morning peak prior";
+    isPeak = true;
+  } else if (inRange(current, 16, 30, 19, 30)) {
+    factor = 1.15;
+    level = "Evening Peak Prior";
+    description = "Mild weekday evening peak prior";
+    isPeak = true;
+  } else if (inRange(current, 11, 30, 13, 30)) {
+    factor = 1.05;
+    level = "Midday Prior";
+    description = "Small weekday midday traffic prior";
+  } else if (current >= 22 * 60 || current < 6 * 60) {
+    factor = 1.0;
+    level = "Night Prior";
+    description = "No extra traffic multiplier at night";
   }
 
   return {
-    factor: 1.15,
-    level: "Normal Traffic",
-    description: "Normal weekday traffic adjustment"
+    factor,
+    level,
+    description,
+    isPeak,
+    timeZone,
+    localHour: hour,
+    localMinute: minute,
+    departureTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(
+      2,
+      "0"
+    )}`,
+    weekday: local.weekday,
+    isWeekend,
   };
 }
 
 function extractLiveTraffics(data) {
   if (!data) return [];
-
   if (Array.isArray(data)) return data;
-
   if (Array.isArray(data.LiveTraffics)) return data.LiveTraffics;
-
   if (Array.isArray(data.data)) return data.data;
-
   if (Array.isArray(data.samples)) return data.samples;
-
   return [];
 }
 
 function calculateAverageSpeed(liveTraffics) {
   const speeds = liveTraffics
     .map((item) => Number(item.TravelSpeed))
-    .filter((speed) => Number.isFinite(speed) && speed > 0);
+    .filter((speed) => Number.isFinite(speed) && speed > 0 && speed < 180);
 
-  if (speeds.length === 0) return null;
+  if (!speeds.length) return null;
 
-  const sum = speeds.reduce((acc, speed) => acc + speed, 0);
-  return sum / speeds.length;
+  return speeds.reduce((sum, speed) => sum + speed, 0) / speeds.length;
 }
 
 function calculateCongestionStats(liveTraffics) {
@@ -92,30 +164,19 @@ function calculateCongestionStats(liveTraffics) {
   let congested = 0;
   let unknown = 0;
 
-  liveTraffics.forEach((item) => {
+  for (const item of liveTraffics) {
     const id = String(item.CongestionLevelID || "").toUpperCase();
-    const level = String(item.CongestionLevel || "");
+    const level = String(item.CongestionLevel ?? "");
 
-    if (id === "A") {
-      smooth += 1;
-    } else if (id === "B") {
-      normal += 1;
-    } else if (id === "C") {
-      slow += 1;
-    } else if (id === "D" || id === "E") {
-      congested += 1;
-    } else if (level === "1") {
-      smooth += 1;
-    } else if (level === "2") {
-      normal += 1;
-    } else if (level === "3") {
-      slow += 1;
-    } else if (level === "4" || level === "5") {
+    if (id === "A" || level === "1") smooth += 1;
+    else if (id === "B" || level === "2") normal += 1;
+    else if (id === "C" || level === "3") slow += 1;
+    else if (id === "D" || id === "E" || level === "4" || level === "5") {
       congested += 1;
     } else {
       unknown += 1;
     }
-  });
+  }
 
   const total = liveTraffics.length || 1;
 
@@ -126,109 +187,44 @@ function calculateCongestionStats(liveTraffics) {
     congested,
     unknown,
     slowRatio: slow / total,
-    congestedRatio: congested / total
+    congestedRatio: congested / total,
   };
 }
 
-export function calculateLiveTrafficFactor(baseTrafficInfo, freewayData, highwayData) {
+/**
+ * Global TDX traffic is useful as telemetry, but it must NOT be used to modify
+ * every user's ETA. Only route-specific TDX matching should materially change
+ * an ETA. This function therefore preserves the mild time prior and exposes
+ * the nationwide TDX statistics for diagnostics/UI only.
+ */
+export function calculateLiveTrafficFactor(
+  baseTrafficInfo,
+  freewayData,
+  highwayData
+) {
   const freewayLiveTraffics = extractLiveTraffics(freewayData);
   const highwayLiveTraffics = extractLiveTraffics(highwayData);
-
-  const allLiveTraffics = [
-    ...freewayLiveTraffics,
-    ...highwayLiveTraffics
-  ];
-
-  const liveDataAvailable = allLiveTraffics.length > 0;
-  const liveDataCount = allLiveTraffics.length;
-
-  if (!liveDataAvailable) {
-    return {
-      factor: baseTrafficInfo.factor,
-      level: baseTrafficInfo.level + " + No TDX Live Data",
-      description:
-        baseTrafficInfo.description +
-        ". No usable TDX live traffic data found, using time-of-day fallback.",
-      liveDataAvailable: false,
-      liveDataCount: 0,
-      averageSpeed: null,
-      slowRatio: 0,
-      congestedRatio: 0,
-      liveTrafficPenalty: 0
-    };
-  }
+  const allLiveTraffics = [...freewayLiveTraffics, ...highwayLiveTraffics];
 
   const averageSpeed = calculateAverageSpeed(allLiveTraffics);
   const congestionStats = calculateCongestionStats(allLiveTraffics);
-
-  let liveTrafficPenalty = 0;
-
-  /*
-    重要：
-    目前這裡是全域 TDX traffic，不是只針對使用者路線。
-    所以 penalty 不能加太多，不然 ETA 會被全台資料放大。
-  */
-
-  if (averageSpeed !== null) {
-    if (averageSpeed < 25) {
-      liveTrafficPenalty += 0.2;
-    } else if (averageSpeed < 40) {
-      liveTrafficPenalty += 0.12;
-    } else if (averageSpeed < 55) {
-      liveTrafficPenalty += 0.06;
-    } else if (averageSpeed > 80) {
-      liveTrafficPenalty -= 0.03;
-    }
-  }
-
-  if (congestionStats.congestedRatio > 0.2) {
-    liveTrafficPenalty += 0.15;
-  } else if (congestionStats.congestedRatio > 0.1) {
-    liveTrafficPenalty += 0.1;
-  } else if (congestionStats.congestedRatio > 0.05) {
-    liveTrafficPenalty += 0.05;
-  }
-
-  if (congestionStats.slowRatio > 0.25) {
-    liveTrafficPenalty += 0.08;
-  } else if (congestionStats.slowRatio > 0.15) {
-    liveTrafficPenalty += 0.04;
-  }
-
-  // 沒有 route-level matching 前，全域 TDX 修正最多只加 0.25
-  liveTrafficPenalty = Math.max(-0.05, Math.min(0.25, liveTrafficPenalty));
-
-  // MVP 安全上限，避免 28 分鐘被放大到 60+ 分鐘
-  const finalFactor = Math.min(
-    1.65,
-    baseTrafficInfo.factor + liveTrafficPenalty
-  );
-
-  let liveLevel = "TDX Normal";
-
-  if (liveTrafficPenalty >= 0.18) {
-    liveLevel = "TDX Heavy Traffic";
-  } else if (liveTrafficPenalty >= 0.1) {
-    liveLevel = "TDX Moderate Traffic";
-  } else if (liveTrafficPenalty > 0) {
-    liveLevel = "TDX Light Delay";
-  } else if (liveTrafficPenalty < 0) {
-    liveLevel = "TDX Smooth Traffic";
-  }
+  const liveDataAvailable = allLiveTraffics.length > 0;
 
   return {
-    factor: Number(finalFactor.toFixed(2)),
-    level: baseTrafficInfo.level + " + " + liveLevel,
-    description:
-      baseTrafficInfo.description +
-      ". TDX live traffic data is connected and used to moderately adjust ETA.",
-    liveDataAvailable: true,
-    liveDataCount,
+    factor: clamp(Number(baseTrafficInfo?.factor || 1), 0.95, 1.2),
+    level: liveDataAvailable
+      ? `${baseTrafficInfo?.level || "Traffic Prior"} + TDX telemetry available`
+      : `${baseTrafficInfo?.level || "Traffic Prior"} + no TDX telemetry`,
+    description: liveDataAvailable
+      ? `${baseTrafficInfo?.description || "Traffic prior"}. Nationwide TDX data is shown for diagnostics only; ETA uses route-specific TDX matching when available.`
+      : `${baseTrafficInfo?.description || "Traffic prior"}. No TDX live telemetry was available.`,
+    liveDataAvailable,
+    liveDataCount: allLiveTraffics.length,
     freewayLiveDataCount: freewayLiveTraffics.length,
     highwayLiveDataCount: highwayLiveTraffics.length,
     averageSpeed: averageSpeed === null ? null : Number(averageSpeed.toFixed(1)),
     slowRatio: Number(congestionStats.slowRatio.toFixed(3)),
     congestedRatio: Number(congestionStats.congestedRatio.toFixed(3)),
-    liveTrafficPenalty: Number(liveTrafficPenalty.toFixed(2))
+    liveTrafficPenalty: 0,
   };
 }

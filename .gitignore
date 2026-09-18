@@ -22,3 +22,33 @@ osrm-data/
 
 # old files
 _old/
+
+# Local secrets
+.env
+**/.env
+
+# TDX historical cache / local runtime data
+backend/data/
+
+# VS Code local settings
+.vscode/
+
+# Local backup files
+**/*.before-*
+**/*before-*
+**/*zero-coverage-backup*
+
+# Local secrets
+.env
+**/.env
+
+# TDX historical cache / local runtime data
+backend/data/
+
+# VS Code local settings
+.vscode/
+
+# Local backup files
+**/*.before-*
+**/*before-*
+**/*zero-coverage-backup*

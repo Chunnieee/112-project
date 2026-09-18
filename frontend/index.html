@@ -4,167 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <title>Risk-Aware OSM Navigation</title>
+  <title>Risk-Aware Multi-modal Navigation</title>
 
-  <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
   />
 
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      font-family: Arial, sans-serif;
-    }
-
-    #map {
-      width: 100%;
-      height: 100vh;
-    }
-
-    #controlPanel {
-      position: absolute;
-      top: 15px;
-      left: 15px;
-      z-index: 1000;
-      background: white;
-      padding: 16px;
-      border-radius: 14px;
-      box-shadow: 0 3px 14px rgba(0, 0, 0, 0.28);
-      width: 350px;
-      max-height: 90vh;
-      overflow-y: auto;
-    }
-
-    h3 {
-      margin-top: 0;
-      margin-bottom: 4px;
-    }
-
-    .subtitle {
-      font-size: 12px;
-      color: #666;
-      margin-bottom: 12px;
-      line-height: 1.4;
-    }
-
-    input {
-      width: 100%;
-      padding: 9px;
-      margin-bottom: 8px;
-      box-sizing: border-box;
-      border: 1px solid #ccc;
-      border-radius: 7px;
-      font-size: 14px;
-    }
-
-    button {
-      width: 100%;
-      padding: 9px;
-      background-color: #2563eb;
-      color: white;
-      border: none;
-      border-radius: 7px;
-      cursor: pointer;
-      margin-bottom: 8px;
-      font-size: 14px;
-    }
-
-    button:hover {
-      background-color: #1d4ed8;
-    }
-
-    .secondaryBtn {
-      background-color: #475569;
-    }
-
-    .secondaryBtn:hover {
-      background-color: #334155;
-    }
-
-    #status {
-      font-size: 14px;
-      line-height: 1.5;
-      margin: 8px 0;
-    }
-
-    .routeCard {
-      border: 1px solid #ddd;
-      border-radius: 10px;
-      padding: 10px;
-      margin-top: 10px;
-      background: #fafafa;
-      cursor: pointer;
-    }
-
-    .routeCard:hover {
-      background: #eef4ff;
-    }
-
-    .routeCard.selected {
-      border: 2px solid #2563eb;
-      background: #eef4ff;
-    }
-
-    .routeTitle {
-      font-weight: bold;
-      margin-bottom: 6px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .badge {
-      font-size: 11px;
-      padding: 3px 6px;
-      border-radius: 999px;
-      background: #e0e7ff;
-      color: #1e3a8a;
-    }
-
-    .metric {
-      font-size: 13px;
-      margin: 3px 0;
-    }
-
-    .trafficMetric {
-      font-size: 13px;
-      margin: 3px 0;
-      color: #b45309;
-    }
-
-    .recommendBox {
-      margin-top: 10px;
-      padding: 10px;
-      border-radius: 10px;
-      background: #ecfdf5;
-      border: 1px solid #86efac;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-
-    .warningBox {
-      margin-top: 10px;
-      padding: 10px;
-      border-radius: 10px;
-      background: #fff7ed;
-      border: 1px solid #fdba74;
-      font-size: 12px;
-      line-height: 1.5;
-      color: #7c2d12;
-    }
-
-    .smallText {
-      font-size: 12px;
-      color: gray;
-      line-height: 1.4;
-      margin-top: 8px;
-    }
-  </style>
+  <link rel="stylesheet" href="style.css?v=41" />
 </head>
 
 <body>
@@ -172,41 +19,90 @@
     <h3>Risk-Aware Navigation</h3>
 
     <div class="subtitle">
-      顯示 Base OSRM Time、Traffic-adjusted Expected Time、Worst 10%、Variance、Stability Score。<br />
-      路線由你的 Backend → 自架 OSRM → 台灣 OSM 資料計算。
+      OSRM + TDX，多點、多交通工具、語音輸入。<br />
+      每一段分開計算後再加總時間。
     </div>
 
-    <input id="startInput" type="text" placeholder="起點，例如：台北車站, 台北, 台灣" />
-    <input id="endInput" type="text" placeholder="終點，例如：台北101, 台北, 台灣" />
+    <label class="fieldLabel">起點</label>
+    <div class="inputRow">
+      <input
+        id="startInput"
+        type="text"
+        placeholder="例如：我家 / 台北車站"
+      />
+      <button
+  class="voiceBtn"
+  type="button"
+  onclick="startVoiceInput('startInput')"
+  aria-label="語音輸入"
+  title="語音輸入"
+>
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.08A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z"/>
+  </svg>
+</button>
+    </div>
+
+    <div id="waypointList"></div>
+
+    <button class="secondaryBtn" type="button" onclick="addWaypoint()">
+      ＋新增中途點
+    </button>
+
+    <label class="fieldLabel">到終點的交通工具</label>
+    <select id="endMode">
+      <option value="walk">步行</option>
+      <option value="bus">公車</option>
+      <option value="mrt">捷運</option>
+      <option value="train">台鐵</option>
+      <option value="hsr">高鐵</option>
+      <option value="drive">開車</option>
+    </select>
+
+    <label class="fieldLabel">終點</label>
+    <div class="inputRow">
+      <input
+        id="endInput"
+        type="text"
+        placeholder="例如：台北101 / 高雄車站"
+      />
+      <button
+        class="voiceBtn"
+        type="button"
+        onclick="startVoiceInput('endInput')"
+      >
+        🎤
+      </button>
+    </div>
 
     <button onclick="useMyLocation()">使用我的位置當起點</button>
-    <button onclick="calculateRoute()">規劃風險路線</button>
+    <button onclick="calculateRoute()">規劃單段風險路線</button>
+    <button onclick="calculateMultiModalRoute()">規劃多點多交通工具路線</button>
     <button class="secondaryBtn" onclick="clearRoutes()">清除路線</button>
 
-    <div id="status">請輸入起點與終點。</div>
+    <div id="status">請輸入起點與終點；需要換車就新增中途點。</div>
 
     <div id="recommendationBox"></div>
 
     <div id="routeList"></div>
 
     <div class="warningBox">
-      目前 Risk Model 是 prototype demo：OSRM 原始時間會再加入 traffic adjustment factor，
-      讓預估時間更接近真實交通。未來可接入歷史交通資料來計算真實 variance。
+      Demo 說明：步行/開車使用 OSRM 實際道路路線。
+      高鐵使用 TDX 高鐵班表與高鐵站點路徑。
+      捷運使用 TDX 捷運站點路徑與即時到站資料；沒有即時資料時用時段班距估算。
+      台鐵使用 TDX 台鐵班表與停靠站路徑。
+      公車需要輸入 city 與 routeName 才能使用 TDX 公車資料。
     </div>
 
     <div class="smallText">
-      Frontend：Leaflet + OSM<br />
       Backend：http://localhost:3000<br />
-      Routing：Self-hosted OSRM http://localhost:5000
+      OSRM：你的 OSRM_BASE_URL 或 http://localhost:5000
     </div>
   </div>
 
   <div id="map"></div>
 
-  <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-  <!-- Your JS -->
-  <script src="app.js?v=30"></script>
+  <script src="app.js?v=50"></script>
 </body>
 </html>
