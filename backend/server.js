@@ -1,9 +1,13 @@
+import {
+  createRouteHash,
+} from "./historicalDb.js";
 import "dotenv/config";
 import express from "express";
 import { assessHistoricalRisk } from "./riskEngine.js";
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
 import { loadRouteVdObservations } from "./tdxVdRouteEngine.js";
 import { resolvePlaceUniversal } from "./placeSearchEngine.js";
+import { getValhallaRoutes } from "./valhallaClient.js";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { planMultiModalRoute } from "./multimodalRoutePlanner.js";
@@ -1851,7 +1855,39 @@ app.get("/api/route", async (req, res) => {
       throw lastError || new Error("OSRM route failed");
     }
 
-    const baseRoutes = await getOsrmRoutes();
+    async function getBaseRoutes() {
+      try {
+        const routes = await getValhallaRoutes({
+          startLon: sLon,
+          startLat: sLat,
+          endLon: eLon,
+          endLat: eLat,
+          alternatives: 2,
+          timeoutMs: 10000,
+        });
+
+        console.log(
+          `[routing] Valhalla returned ${routes.length} route(s)`
+        );
+
+        return routes;
+      } catch (error) {
+        console.warn(
+          "[routing] Valhalla unavailable -> OSRM fallback:",
+          error.message
+        );
+
+        const routes = await getOsrmRoutes();
+
+        return routes.map((route) => ({
+          ...route,
+          routingEngine: "osrm",
+        }));
+      }
+    }
+
+    const baseRoutes = await getBaseRoutes();
+
     if (!baseRoutes.length) {
       return res.status(404).json({ error: "No route found" });
     }
@@ -2148,32 +2184,46 @@ app.get("/api/route", async (req, res) => {
           route
         );
 
+let routeHash = null;
 
-      const risk =
-        await assessHistoricalRisk({
-          baseOsrmMin,
-          routeDistanceKm,
+try {
+  routeHash =
+    createRouteHash(route);
+} catch (error) {
+  console.warn(
+    "[risk db] unable to create route hash:",
+    error.message
+  );
+}
+const risk =
+  await assessHistoricalRisk({
+    baseOsrmMin,
+    routeDistanceKm,
 
-          // calculateTdxHybridEta 已經把同一路線實際命中的
-          // TDX section 與 matchedDistanceKm 整理好了。
-          // Historical risk 只使用有 city + SectionID 的部分。
-          matchedCitySections:
-            (
-              eta.matchedSections ||
-              []
-            ).filter(
-              (item) =>
-                item.city &&
-                item.sectionId &&
-                Number(
-                  item.matchedDistanceKm ||
-                  0
-                ) > 0
-            ),
+    routeHash,
 
-          departureTime:
-            requestedDepartureTime
-        });
+    routingEngine:
+      route.routingEngine ||
+      route.raw?.routingEngine ||
+      "unknown",
+
+    matchedCitySections:
+      (
+        eta.matchedSections ||
+        []
+      ).filter(
+        (item) =>
+          item.city &&
+          item.sectionId &&
+          Number(
+            item.matchedDistanceKm ||
+            0
+          ) > 0
+      ),
+
+    departureTime:
+      requestedDepartureTime
+  });
 
 
       const citySections =
@@ -2473,6 +2523,9 @@ app.get("/api/route", async (req, res) => {
 
         historicalMedianMin:
           risk.historicalMedianMin,
+          
+          historicalAverageTdxCoverageRatio:
+  risk.historicalAverageTdxCoverageRatio,
 
         /*
           不再自己發明 0-100 Stability。

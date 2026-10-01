@@ -2,6 +2,10 @@ import "dotenv/config";
 import {
   getHistoricalSectionStats,
 } from "./historicalTrafficClient.js";
+import {
+  upsertHistoricalObservation,
+  getHistoricalObservations,
+} from "./historicalDb.js";
 
 function envInteger(name, fallback, minimum = 1) {
   const value = Number(process.env[name]);
@@ -494,6 +498,10 @@ function emptyRiskResult({
 export async function assessHistoricalRisk({
   baseOsrmMin,
   routeDistanceKm,
+
+  routeHash = null,
+  routingEngine = "unknown",
+
   matchedCitySections,
   departureTime = null,
 }) {
@@ -556,15 +564,139 @@ export async function assessHistoricalRisk({
       LOOKBACK_WEEKS
     );
 
-  const samples = [];
-  const attemptedDates = [];
+  const oldestCandidateDate =
+  candidateDates.length
+    ? candidateDates[
+        candidateDates.length - 1
+      ]
+    : null;
+
+
+// ============================================================
+// 1. FIRST: load already-persisted observations from SQLite
+// ============================================================
+
+let samples = [];
+
+if (routeHash) {
+  try {
+    const storedObservations =
+      getHistoricalObservations({
+        routeHash,
+
+        routingEngine,
+
+        modelVersion: "v1",
+
+        weekday:
+          current.weekday,
+
+        bucketStart:
+          timeBucket,
+
+        beforeDate:
+          current.dateKey,
+
+        afterDate:
+          oldestCandidateDate,
+
+        // We keep more than the minimum in the DB.
+        // 26 same-weekday observations = 26 weeks.
+        limit:
+          LOOKBACK_WEEKS,
+      });
+
+    samples =
+      storedObservations
+        .filter(
+          (row) =>
+            Number.isFinite(
+              Number(
+                row.historicalEtaSec
+              )
+            ) &&
+            Number(
+              row.historicalEtaSec
+            ) > 0
+        )
+        .map(
+          (row) => ({
+            date:
+              row.observationDate,
+
+            etaMin:
+              Number(
+                row.historicalEtaSec
+              ) / 60,
+
+            coverageRatio:
+              Number(
+                row.coverageRatio ??
+                0
+              ),
+
+            matchedDistanceKm:
+              Number(
+                row.matchedDistanceM ??
+                0
+              ) / 1000,
+
+            matchedSectionCount:
+              Number(
+                row.matchedSectionCount ??
+                0
+              ),
+          })
+        );
+
+    console.log(
+      `[risk db] loaded ${samples.length} stored sample(s) ` +
+      `for ${timeBucket}`
+    );
+  } catch (error) {
+    console.warn(
+      "[risk db] failed to load stored observations:",
+      error.message
+    );
+
+    samples = [];
+  }
+}
+
+
+const attemptedDates = [];
+
+const storedDates =
+  new Set(
+    samples.map(
+      (sample) =>
+        sample.date
+    )
+  );
 
   for (
-    const date of candidateDates
+  const date of candidateDates
+) {
+  /*
+   * This date is already persisted for
+   * exactly this route + weekday + bucket.
+   * Do not reconstruct it from cache again.
+   */
+  if (
+    storedDates.has(date)
   ) {
-    attemptedDates.push(date);
+    continue;
+  }
 
-    let totalDeltaSec = 0;
+  /*
+   * If SQLite already satisfies the minimum,
+   * there is no reason to scan more cache files.
+   */
+
+
+  attemptedDates.push(date);
+
+  let totalDeltaSec = 0;
 
     let matchedDistanceKm = 0;
 
@@ -610,7 +742,16 @@ export async function assessHistoricalRisk({
         dateFetchFailed = true;
         break;
       }
+let requestedSectionCount =
+  routeSections.length;
 
+let historicalFoundCount = 0;
+
+let validSpeedCount = 0;
+
+let matchedDistanceThisCityKm = 0;
+
+const missingSectionIds = [];
       for (
         const routeSection of
         routeSections
@@ -621,11 +762,17 @@ export async function assessHistoricalRisk({
               .sectionId
           ];
 
-        if (
-          !historicalSection
-        ) {
-          continue;
-        }
+       if (
+  !historicalSection
+) {
+  missingSectionIds.push(
+    routeSection.sectionId
+  );
+
+  continue;
+}
+
+historicalFoundCount += 1;
 
         const speed =
           historicalSpeedForSection(
@@ -641,10 +788,13 @@ export async function assessHistoricalRisk({
         ) {
           continue;
         }
+        validSpeedCount += 1;
 
         const distance =
           routeSection
             .matchedDistanceKm;
+            matchedDistanceThisCityKm +=
+  Number(distance || 0);
 
         const observedSec =
           (
@@ -679,6 +829,23 @@ export async function assessHistoricalRisk({
         matchedSectionCount +=
           1;
       }
+      console.log(
+  `[risk debug] ${city} ${date} ${timeBucket} | ` +
+  `requested=${requestedSectionCount}, ` +
+  `historicalFound=${historicalFoundCount}, ` +
+  `validSpeed=${validSpeedCount}, ` +
+  `matchedKm=${matchedDistanceThisCityKm.toFixed(3)}, ` +
+  `missing=${missingSectionIds.length}`
+);
+
+if (
+  missingSectionIds.length > 0
+) {
+  console.log(
+    `[risk debug] missing SectionIDs:`,
+    missingSectionIds.slice(0, 10)
+  );
+}
     }
 
     if (dateFetchFailed) {
@@ -719,19 +886,128 @@ export async function assessHistoricalRisk({
         1
       );
 
-    samples.push({
-      date,
+    const sample = {
+  date,
 
-      etaMin:
-        historicalRouteSec /
-        60,
+  etaMin:
+    historicalRouteSec /
+    60,
+
+  coverageRatio,
+
+  matchedDistanceKm,
+
+  matchedSectionCount,
+};
+
+samples.push(sample);
+
+
+/*
+ * Persist the exact route-level historical
+ * observation that was already accepted by
+ * the risk engine.
+ *
+ * Database persistence must NOT change the
+ * statistical result.
+ */
+if (routeHash) {
+  try {
+    const matchedBaselineSec =
+      baseSecPerKm *
+      matchedDistanceKm;
+
+    const historicalObservedSec =
+      matchedBaselineSec +
+      totalDeltaSec;
+
+    const uncoveredBaselineSec =
+      Math.max(
+        0,
+        baseSec -
+        matchedBaselineSec
+      );
+
+    const cities =
+      [
+        ...new Set(
+          sections
+            .map(
+              (section) =>
+                section.city
+            )
+            .filter(Boolean)
+        ),
+      ]
+        .sort()
+        .join(",");
+
+    upsertHistoricalObservation({
+      routeHash,
+
+      routingEngine,
+
+      modelVersion: "v1",
+
+      city:
+        cities ||
+        "Unknown",
+
+      observationDate:
+        date,
+
+      weekday:
+        current.weekday,
+
+      bucketStart:
+        timeBucket,
+
+      historicalEtaSec:
+        historicalRouteSec,
+
+      tdxObservedSec:
+        historicalObservedSec,
+
+      uncoveredBaselineSec,
+
+      routeDistanceM:
+        distanceKm * 1000,
+
+      matchedDistanceM:
+        matchedDistanceKm *
+        1000,
 
       coverageRatio,
 
-      matchedDistanceKm,
-
       matchedSectionCount,
+
+      source:
+        "TDX Historical",
     });
+    storedDates.add(date);
+
+    console.log(
+      `[risk db] saved ${date} ${timeBucket} | ` +
+      `${round(
+        historicalRouteSec / 60,
+        2
+      )} min | ` +
+      `${round(
+        coverageRatio * 100,
+        0
+      )}% coverage`
+    );
+  } catch (error) {
+    /*
+     * A database write failure must NEVER
+     * break navigation or change risk results.
+     */
+    console.warn(
+      `[risk db] failed to save ${date} ${timeBucket}:`,
+      error.message
+    );
+  }
+}
 
     console.log(
       `[risk history] ${date} ${timeBucket}: ` +
@@ -753,8 +1029,7 @@ export async function assessHistoricalRisk({
     // is desired.
     if (
       samples.length >=
-      MIN_UNIQUE_DAYS
-    ) {
+      LOOKBACK_WEEKS    ) {
       break;
     }
   }
@@ -811,6 +1086,23 @@ export async function assessHistoricalRisk({
           sample.etaMin
       )
     );
+    console.log(
+  "[risk stats]",
+  JSON.stringify(
+    {
+      sampleCount:
+        samples.length,
+
+      values:
+        samples.map(
+          (sample) =>
+            sample.etaMin
+        ),
+
+      stats,
+    }
+  )
+);
 
   if (!stats) {
     return emptyRiskResult({
