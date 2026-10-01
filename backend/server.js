@@ -44,6 +44,9 @@ import {
   getHighwayLiveIncident,
   testTdxConnection,
 } from "./tdxClient.js";
+import {
+  ensureHistoricalCoverage,
+} from "./ensureHistoricalCoverage.js";
 
 
 const app = express();
@@ -2195,35 +2198,161 @@ try {
     error.message
   );
 }
-const risk =
-  await assessHistoricalRisk({
-    baseOsrmMin,
-    routeDistanceKm,
+const matchedCitySections =
+  (
+    eta.matchedSections ||
+    []
+  ).filter(
+    (item) =>
+      item.city &&
+      item.sectionId &&
+      Number(
+        item.matchedDistanceKm ||
+        0
+      ) > 0
+  );
 
-    routeHash,
+const riskArgs = {
+  baseOsrmMin,
+  routeDistanceKm,
 
-    routingEngine:
-      route.routingEngine ||
-      route.raw?.routingEngine ||
-      "unknown",
+  routeHash,
 
-    matchedCitySections:
-      (
-        eta.matchedSections ||
-        []
-      ).filter(
-        (item) =>
-          item.city &&
-          item.sectionId &&
-          Number(
-            item.matchedDistanceKm ||
-            0
-          ) > 0
+  routingEngine:
+    route.routingEngine ||
+    route.raw?.routingEngine ||
+    "unknown",
+
+  matchedCitySections,
+};
+
+let risk =
+  await assessHistoricalRisk(
+    riskArgs
+  );
+
+/*
+ * Automatic Historical backfill.
+ *
+ * Only runs when:
+ * 1. Historical risk is not ready
+ * 2. This route has at least one matched TDX city section
+ *
+ * We gradually increase the number of usable raw
+ * Historical weekdays. After each step we rebuild
+ * route-level observations and stop immediately
+ * once the route reaches 8 unique historical days.
+ */
+if (
+  risk.riskStatus !==
+    "ready" &&
+  matchedCitySections.length >
+    0
+) {
+  const cities =
+    [
+      ...new Set(
+        matchedCitySections
+          .map(
+            (item) =>
+              String(
+                item.city ||
+                ""
+              ).trim()
+          )
+          .filter(Boolean)
       ),
+    ];
 
-    departureTime:
-      requestedDepartureTime
-  });
+  for (
+    let rawTarget = 8;
+    rawTarget <= 26;
+    rawTarget += 1
+  ) {
+    if (
+      risk.riskStatus ===
+      "ready"
+    ) {
+      break;
+    }
+
+    console.log(
+      `[risk auto-backfill] route=${String(
+        routeHash || "unknown"
+      ).slice(
+        0,
+        12
+      )} ` +
+        `samples=${risk.sampleCount || 0}/8 ` +
+        `rawTarget=${rawTarget}`
+    );
+
+    for (
+      const city of cities
+    ) {
+      try {
+        await ensureHistoricalCoverage({
+          city,
+
+          timeBucket:
+            risk.timeBucket,
+
+          minimumSamples:
+            rawTarget,
+
+          maxWeeks: 26,
+
+          delayMs: 2000,
+
+          log: true,
+        });
+      } catch (error) {
+        console.warn(
+          `[risk auto-backfill] ${city} failed:`,
+          error.message
+        );
+      }
+    }
+
+    /*
+     * Historical files may now exist,
+     * so run the route reconstruction again.
+     */
+    risk =
+      await assessHistoricalRisk(
+        riskArgs
+      );
+
+    console.log(
+      `[risk auto-backfill] route samples now ` +
+        `${risk.sampleCount || 0}/8 ` +
+        `status=${risk.riskStatus}`
+    );
+    }
+
+}
+
+console.log(
+  "[route response risk]",
+  {
+    routeHash:
+      String(
+        routeHash || ""
+      ).slice(0, 12),
+
+    riskStatus:
+      risk.riskStatus,
+
+    sampleCount:
+      risk.sampleCount,
+
+    p90:
+      risk.worst10Min,
+
+    historicalCoverage:
+      risk.historicalAverageTdxCoverageRatio,
+  }
+);
 
 
       const citySections =
@@ -2523,7 +2652,7 @@ const risk =
 
         historicalMedianMin:
           risk.historicalMedianMin,
-          
+
           historicalAverageTdxCoverageRatio:
   risk.historicalAverageTdxCoverageRatio,
 
