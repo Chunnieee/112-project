@@ -784,3 +784,36 @@ export async function planMrtSameLineRoute({ from, to, time = "09:00", railSyste
         : "使用 TDX LiveBoard 即時到站資料估算等車時間。",
   };
 }
+
+// =========================================================
+// ETA V8 — canonical Freeway/Highway published-section geometry
+// =========================================================
+export const TDX_V8_CANONICAL_ROAD_STATIC = true;
+const ROAD_SECTION_STATIC_CACHE_MS_V8 = 6 * 60 * 60 * 1000;
+
+async function getRoadTrafficStaticV8(application, scope) {
+  const url =
+    `https://tdx.transportdata.tw/api/basic/v2/Road/Traffic/${application}/${scope}` +
+    `?%24format=JSON`;
+  console.log(`[TDX] ${application}/${scope}:`, url);
+  return await fetchTdxJson(url, {
+    timeoutMs: 25000,
+    cacheMs: ROAD_SECTION_STATIC_CACHE_MS_V8,
+  });
+}
+
+export async function getFreewaySectionShapes() {
+  return await getRoadTrafficStaticV8("SectionShape", "Freeway");
+}
+
+export async function getHighwaySectionShapes() {
+  return await getRoadTrafficStaticV8("SectionShape", "Highway");
+}
+
+export async function getFreewaySections() {
+  return await getRoadTrafficStaticV8("Section", "Freeway");
+}
+
+export async function getHighwaySections() {
+  return await getRoadTrafficStaticV8("Section", "Highway");
+}

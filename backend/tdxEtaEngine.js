@@ -1,3 +1,7 @@
+import { selectTdxLiveObservation } from "./etaEvidenceV6.js";
+
+export const ETA_ENGINE_V8_CANONICAL_SECTION_GEOMETRY = true;
+
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const toRad = (v) => (Number(v) * Math.PI) / 180;
@@ -68,6 +72,83 @@ function angleDiffDeg(a, b) {
     diff,
     360 - diff
   );
+}
+
+
+function directionAxisDiffDeg(a, b) {
+  const directed = angleDiffDeg(a, b);
+  return Math.min(directed, Math.abs(180 - directed));
+}
+
+function directionSemanticClass(diffDeg, maxDirectionDiffDeg) {
+  const diff = Number(diffDeg);
+  if (!Number.isFinite(diff)) return "unknown";
+  if (diff <= maxDirectionDiffDeg) return "aligned";
+  if (diff >= 180 - maxDirectionDiffDeg) return "reverse_axis_aligned";
+  return "oblique_wrong_direction";
+}
+
+export function classifyUncoveredCandidateV7_2({
+  candidate = null,
+  thresholdKm = 0.06,
+} = {}) {
+  if (!candidate) return "no_candidate";
+
+  const distanceKm = Number(candidate.distanceKm);
+  const directionClass = candidate.directionClass || "unknown";
+  const withinDistance = Number.isFinite(distanceKm) && distanceKm <= thresholdKm;
+
+  if (directionClass === "aligned") {
+    return withinDistance ? "eligible_but_unselected" : "aligned_but_too_far";
+  }
+  if (directionClass === "reverse_axis_aligned") {
+    return withinDistance ? "opposite_direction" : "opposite_direction_and_too_far";
+  }
+  if (directionClass === "oblique_wrong_direction") {
+    return withinDistance ? "crossing_or_adjacent_road" : "wrong_road_or_too_far";
+  }
+  return withinDistance ? "direction_unknown" : "no_nearby_eligible_evidence";
+}
+
+
+function annotateTdxSectionMatchBearings(pieces) {
+  if (!Array.isArray(pieces) || !pieces.length) return pieces || [];
+
+  const configuredMeters = Number(process.env.TDX_SECTION_BEARING_WINDOW_M || 120);
+  const windowKm = Math.max(0.03, Math.min(0.4, configuredMeters / 1000));
+  const halfWindowKm = windowKm / 2;
+
+  for (let i = 0; i < pieces.length; i += 1) {
+    let left = i;
+    let right = i;
+    let leftKm = 0;
+    let rightKm = 0;
+
+    while (left > 0 && leftKm < halfWindowKm) {
+      left -= 1;
+      leftKm += Number(pieces[left]?.km || 0);
+    }
+
+    while (right < pieces.length - 1 && rightKm < halfWindowKm) {
+      right += 1;
+      rightKm += Number(pieces[right]?.km || 0);
+    }
+
+    const a = pieces[left]?.a;
+    const b = pieces[right]?.b;
+    const smoothed = a && b ? bearingDeg(a, b) : bearingDeg(pieces[i].a, pieces[i].b);
+    pieces[i].matchBearing = Number.isFinite(smoothed)
+      ? smoothed
+      : bearingDeg(pieces[i].a, pieces[i].b);
+    pieces[i].matchBearingWindowKm =
+      leftKm + Number(pieces[i]?.km || 0) + rightKm;
+  }
+
+  return pieces;
+}
+
+export function __testSmoothTdxSectionBearings(pieces) {
+  return annotateTdxSectionMatchBearings(pieces);
 }
 
 
@@ -253,7 +334,7 @@ function isFresh(
     liveAgeMin(value);
 
   if (age === null) {
-    return true;
+    return process.env.TDX_REQUIRE_LIVE_TIMESTAMP === "0";
   }
 
   return (
@@ -345,192 +426,474 @@ function addSegmentToGrid(
 }
 
 
+
+function extractTdxStaticList(data, keys = []) {
+  if (Array.isArray(data)) return data;
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key];
+  }
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+function sectionIdentity(item) {
+  return String(item?.SectionID ?? item?.SectionUID ?? item?.sectionId ?? item?.sectionUid ?? "").trim();
+}
+
+function parseCoordinatePair(raw) {
+  const nums = String(raw || "")
+    .trim()
+    .split(/\s+/)
+    .map(Number)
+    .filter(Number.isFinite);
+  if (nums.length < 2) return null;
+  return { lon: nums[0], lat: nums[1] };
+}
+
+function parseTdxSectionShapeGeometry(value) {
+  if (!value) return [];
+
+  if (typeof value === "object") {
+    const coords = value?.coordinates;
+    const type = String(value?.type || "").toLowerCase();
+    if (type === "linestring" && Array.isArray(coords)) {
+      const line = normalizeDecodedPolyline(coords);
+      return line.length >= 2 ? [line] : [];
+    }
+    if (type === "multilinestring" && Array.isArray(coords)) {
+      return coords
+        .map(normalizeDecodedPolyline)
+        .filter((line) => line.length >= 2);
+    }
+  }
+
+  const text = String(value || "").trim();
+  if (!text) return [];
+
+  const parseLineBody = (body) =>
+    String(body || "")
+      .split(",")
+      .map(parseCoordinatePair)
+      .filter(Boolean);
+
+  const multi = text.match(/^MULTILINESTRING\s*\(\s*(.*)\s*\)$/i);
+  if (multi) {
+    const body = multi[1];
+    const groups = [];
+    let depth = 0;
+    let current = "";
+    for (const ch of body) {
+      if (ch === "(") {
+        if (depth > 0) current += ch;
+        depth += 1;
+      } else if (ch === ")") {
+        depth -= 1;
+        if (depth > 0) current += ch;
+        if (depth === 0 && current.trim()) {
+          const line = parseLineBody(current);
+          if (line.length >= 2) groups.push(line);
+          current = "";
+        }
+      } else if (depth > 0) {
+        current += ch;
+      }
+    }
+    return groups;
+  }
+
+  const lineMatch = text.match(/^LINESTRING\s*\(\s*(.*)\s*\)$/i);
+  const body = lineMatch ? lineMatch[1] : text.replace(/^\(+|\)+$/g, "");
+  const line = parseLineBody(body);
+  return line.length >= 2 ? [line] : [];
+}
+
+function roadDirectionBearing(value) {
+  const raw = String(value ?? "").trim().toUpperCase();
+  if (!raw) return null;
+  const normalized = raw
+    .replace(/向|BOUND|BOUNDARY|方向/g, "")
+    .replace(/NORTH/g, "N")
+    .replace(/SOUTH/g, "S")
+    .replace(/EAST/g, "E")
+    .replace(/WEST/g, "W")
+    .replace(/北/g, "N")
+    .replace(/南/g, "S")
+    .replace(/東/g, "E")
+    .replace(/西/g, "W")
+    .replace(/\s+/g, "");
+  const map = new Map([
+    ["N", 0], ["NB", 0],
+    ["NE", 45],
+    ["E", 90], ["EB", 90],
+    ["SE", 135],
+    ["S", 180], ["SB", 180],
+    ["SW", 225],
+    ["W", 270], ["WB", 270],
+    ["NW", 315],
+  ]);
+  return map.has(normalized) ? map.get(normalized) : null;
+}
+
+function orientCanonicalLine(line, roadDirection) {
+  if (!Array.isArray(line) || line.length < 2) return line || [];
+  const target = roadDirectionBearing(roadDirection);
+  if (!Number.isFinite(target)) return line;
+  const forward = bearingDeg(line[0], line[line.length - 1]);
+  const reverse = normalizeBearing(forward + 180);
+  return angleDiffDeg(reverse, target) < angleDiffDeg(forward, target)
+    ? [...line].reverse()
+    : line;
+}
+
+function canonicalScopeGeometryIndex(shapeData, sectionData, scope) {
+  const shapes = extractTdxStaticList(shapeData, ["SectionShapes", "Shapes"]);
+  const sections = extractTdxStaticList(sectionData, ["Sections"]);
+  const metadata = new Map();
+  for (const item of sections) {
+    const id = sectionIdentity(item);
+    if (id) metadata.set(id, item);
+  }
+
+  const bySectionId = new Map();
+  let geometryCount = 0;
+  for (const shape of shapes) {
+    const id = sectionIdentity(shape);
+    if (!id) continue;
+    const meta = metadata.get(id) || null;
+    const rawGeometry =
+      shape?.LineString ??
+      shape?.Geometry ??
+      shape?.geometry ??
+      shape?.WKT ??
+      shape?.Shape ??
+      null;
+    const lines = parseTdxSectionShapeGeometry(rawGeometry)
+      .map((line) => orientCanonicalLine(line, meta?.RoadDirection))
+      .filter((line) => line.length >= 2);
+    if (!lines.length) continue;
+    bySectionId.set(id, {
+      sectionId: id,
+      scope,
+      lines,
+      roadName: meta?.RoadName || shape?.RoadName || null,
+      roadDirection: meta?.RoadDirection || shape?.RoadDirection || null,
+      sectionLength: Number(meta?.SectionLength ?? shape?.SectionLength),
+
+      // HIGHWAY_LINK_TRAVELTIME_NORMALIZATION_FINAL
+      linkCount:
+        Array.isArray(meta?.LinkIDs)
+          ? meta.LinkIDs.length
+          : 0,
+    });
+    geometryCount += 1;
+  }
+
+  return {
+    bySectionId,
+    shapeCount: shapes.length,
+    metadataCount: metadata.size,
+    geometryCount,
+  };
+}
+
+export function __testCanonicalRoadGeometry({
+  freewayShapeData = null,
+  highwayShapeData = null,
+  freewaySectionData = null,
+  highwaySectionData = null,
+} = {}) {
+  return {
+    freeway: canonicalScopeGeometryIndex(freewayShapeData, freewaySectionData, "freeway"),
+    highway: canonicalScopeGeometryIndex(highwayShapeData, highwaySectionData, "highway"),
+  };
+}
+
 export function buildTdxRoadIndex({
   freewayData,
   highwayData,
   openLrToPolyline,
-
-  maxAgeMin =
-    Number(
-      process.env
-        .TDX_LIVE_MAX_AGE_MIN ||
-      20
-    ),
-
-  cellDeg = 0.004
+  freewaySectionShapeData = null,
+  highwaySectionShapeData = null,
+  freewaySectionData = null,
+  highwaySectionData = null,
+  maxAgeMin = Number(process.env.TDX_LIVE_MAX_AGE_MIN || 20),
+  cellDeg = 0.004,
 }) {
-  const grid =
-    new Map();
-
+  const grid = new Map();
   let segmentCount = 0;
+  const evidenceDiagnostics = {
+    rawSections: 0,
+    acceptedSections: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    rejected: 0,
+    travelTime: 0,
+    travelSpeed: 0,
+  };
 
-  const rawSections = [
-    ...getTrafficList(
-      freewayData
+  const canonical = {
+    freeway: canonicalScopeGeometryIndex(
+      freewaySectionShapeData,
+      freewaySectionData,
+      "freeway"
     ),
+    highway: canonicalScopeGeometryIndex(
+      highwaySectionShapeData,
+      highwaySectionData,
+      "highway"
+    ),
+  };
 
-    ...getTrafficList(
-      highwayData
-    )
+  const geometryDiagnostics = {
+    canonicalShapeSections:
+      canonical.freeway.geometryCount + canonical.highway.geometryCount,
+    canonicalShapeFreeway: canonical.freeway.geometryCount,
+    canonicalShapeHighway: canonical.highway.geometryCount,
+    staticMetadataFreeway: canonical.freeway.metadataCount,
+    staticMetadataHighway: canonical.highway.metadataCount,
+    liveSectionsUsingCanonicalShape: 0,
+    liveSectionsUsingOpenLrFallback: 0,
+    acceptedSegmentsCanonicalShape: 0,
+    acceptedSegmentsOpenLrFallback: 0,
+    liveSectionsMissingGeometry: 0,
+  };
+
+  const sources = [
+    { scope: "freeway", data: freewayData, canonical: canonical.freeway },
+    { scope: "highway", data: highwayData, canonical: canonical.highway },
   ];
 
+  evidenceDiagnostics.rawSections = sources.reduce(
+    (sum, source) => sum + getTrafficList(source.data).length,
+    0
+  );
 
-  for (
-    const section
-    of rawSections
-  ) {
-    const speed =
-      Number(
+  for (const sourceBundle of sources) {
+    for (const section of getTrafficList(sourceBundle.data)) {
+      const dataCollectTime =
+        section?.DataCollectTime ||
+        section?.UpdateTime ||
+        null;
+
+      const sectionId = sectionIdentity(section);
+      const canonicalEntry = sectionId
+        ? sourceBundle.canonical.bySectionId.get(sectionId)
+        : null;
+
+      let decodedLines = [];
+      let geometrySource = null;
+      let roadName = canonicalEntry?.roadName || section?.RoadName || null;
+      let roadDirection = canonicalEntry?.roadDirection || section?.RoadDirection || null;
+
+      if (canonicalEntry?.lines?.length) {
+        decodedLines = canonicalEntry.lines.map((line) => [...line]);
+        geometrySource = "SectionShape";
+        geometryDiagnostics.liveSectionsUsingCanonicalShape += 1;
+      } else {
+        const openLRs = section?.OpenLRs || section?.openLRs || [];
+        if (Array.isArray(openLRs)) {
+          for (const item of openLRs) {
+            try {
+              const encoded = item?.OpenLR || item?.openLR || item;
+              const line = normalizeDecodedPolyline(openLrToPolyline(encoded));
+              if (line.length >= 2) decodedLines.push(line);
+            } catch {
+              // A bad OpenLR record must not invalidate the remaining live feed.
+            }
+          }
+        }
+        if (decodedLines.length) {
+          geometrySource = "OpenLR";
+          geometryDiagnostics.liveSectionsUsingOpenLrFallback += 1;
+        }
+      }
+
+      if (!decodedLines.length) {
+        geometryDiagnostics.liveSectionsMissingGeometry += 1;
+        continue;
+      }
+
+      const pieceLines = [];
+      let geometryLengthKm = 0;
+      for (const line of decodedLines) {
+        const pieces = [];
+        for (let i = 1; i < line.length; i += 1) {
+          const a = line[i - 1];
+          const b = line[i];
+          const km = haversineKm(a.lat, a.lon, b.lat, b.lon);
+          if (!Number.isFinite(km) || km <= 0.002) continue;
+          pieces.push({ a, b, km });
+          geometryLengthKm += km;
+        }
+        if (pieces.length) pieceLines.push(annotateTdxSectionMatchBearings(pieces));
+      }
+
+      if (!pieceLines.length || geometryLengthKm <= 0) continue;
+
+      const rawTravelTimeSec = Number(
+        section?.TravelTime ??
+        section?.travelTime ??
+        section?.TravelTimeSec ??
+        section?.travelTimeSec
+      );
+
+      const travelSpeedKmh = Number(
         section?.TravelSpeed ??
         section?.travelSpeed ??
         section?.Speed ??
         section?.speed
       );
 
+      /*
+       * HIGHWAY_LINK_TRAVELTIME_NORMALIZATION_FINAL
+       *
+       * Highway audit:
+       * raw TDX TravelTime scales with static LinkIDs.length.
+       *
+       * Highway only.
+       * Freeway remains untouched.
+       */
 
-    if (
-      !Number.isFinite(speed) ||
-      speed < 1 ||
-      speed > 160
-    ) {
-      continue;
-    }
-
-
-    const dataCollectTime =
-      section?.DataCollectTime ||
-      section?.UpdateTime ||
-      null;
-
-
-    if (
-      !isFresh(
-        dataCollectTime,
-        maxAgeMin
-      )
-    ) {
-      continue;
-    }
+      const highwayLinkCount =
+        sourceBundle.scope === "highway"
+          ? Number(canonicalEntry?.linkCount || 0)
+          : 0;
 
 
-    const openLRs =
-      section?.OpenLRs ||
-      section?.openLRs ||
-      [];
-
-
-    if (
-      !Array.isArray(
-        openLRs
-      )
-    ) {
-      continue;
-    }
-
-
-    for (
-      const item
-      of openLRs
-    ) {
-      try {
-        const encoded =
-          item?.OpenLR ||
-          item?.openLR ||
-          item;
-
-
-        const line =
-          normalizeDecodedPolyline(
-            openLrToPolyline(
-              encoded
+      const normalizedTravelTimeSec =
+        sourceBundle.scope === "highway"
+          ? (
+              Number.isFinite(rawTravelTimeSec) &&
+              rawTravelTimeSec > 0 &&
+              highwayLinkCount > 0
+                ? rawTravelTimeSec / highwayLinkCount
+                : NaN
             )
-          );
+          : rawTravelTimeSec;
 
 
-        for (
-          let i = 1;
-          i < line.length;
-          i += 1
-        ) {
-          const a =
-            line[i - 1];
-
-          const b =
-            line[i];
+      const normalizedSpeedFromTravelTime =
+        Number.isFinite(normalizedTravelTimeSec) &&
+        normalizedTravelTimeSec > 0
+          ? geometryLengthKm /
+            (normalizedTravelTimeSec / 3600)
+          : NaN;
 
 
-          const km =
-            haversineKm(
-              a.lat,
-              a.lon,
-              b.lat,
-              b.lon
-            );
+      const travelTimeVsSpeedError =
+        Number.isFinite(normalizedSpeedFromTravelTime) &&
+        normalizedSpeedFromTravelTime > 0 &&
+        Number.isFinite(travelSpeedKmh) &&
+        travelSpeedKmh > 0
+          ? Math.abs(
+              normalizedSpeedFromTravelTime -
+              travelSpeedKmh
+            ) / travelSpeedKmh
+          : null;
 
 
-          if (
-            !Number.isFinite(km) ||
-            km <= 0.002
-          ) {
-            continue;
-          }
+      /*
+       * If Highway normalized TravelTime is still >20%
+       * away from published TravelSpeed, discard TravelTime.
+       *
+       * selectTdxLiveObservation() can then use TravelSpeed.
+       */
+      const rejectNormalizedHighwayTravelTime =
+        sourceBundle.scope === "highway" &&
+        Number.isFinite(travelTimeVsSpeedError) &&
+        travelTimeVsSpeedError > 0.20;
 
 
+      const travelTimeSec =
+        sourceBundle.scope === "highway"
+          ? (
+              rejectNormalizedHighwayTravelTime
+                ? NaN
+                : normalizedTravelTimeSec
+            )
+          : rawTravelTimeSec;
+
+
+      const evidence = selectTdxLiveObservation({
+        dataCollectTime,
+        travelTimeSec,
+        sectionLengthKm: geometryLengthKm,
+        travelSpeedKmh,
+        maxAgeMin,
+        requireTimestamp: process.env.TDX_REQUIRE_LIVE_TIMESTAMP !== "0",
+      });
+
+      if (!evidence.accepted) {
+        evidenceDiagnostics.rejected += 1;
+        continue;
+      }
+
+      evidenceDiagnostics.acceptedSections += 1;
+      evidenceDiagnostics[evidence.confidence] =
+        (evidenceDiagnostics[evidence.confidence] || 0) + 1;
+      evidenceDiagnostics[
+        evidence.observedFrom === "TravelTime" ? "travelTime" : "travelSpeed"
+      ] += 1;
+
+      for (const pieces of pieceLines) {
+        for (const piece of pieces) {
           const segment = {
-            a,
-            b,
-
-            bearing:
-              bearingDeg(
-                a,
-                b
-              ),
-
-            observedSpeedKmh:
-              speed,
-
-            sectionId:
-              section?.SectionID ||
-              section?.SectionUID ||
-              null,
-
-            sectionName:
-              section?.SectionName ||
-              null,
-
+            a: piece.a,
+            b: piece.b,
+            bearing: bearingDeg(piece.a, piece.b),
+            matchBearing: Number.isFinite(Number(piece.matchBearing))
+              ? Number(piece.matchBearing)
+              : bearingDeg(piece.a, piece.b),
+            matchBearingWindowKm: Number(piece.matchBearingWindowKm || 0),
+            observedSpeedKmh: evidence.observedSpeedKmh,
+            scope: sourceBundle.scope,
+            sectionId: sectionId || null,
+            sectionName: section?.SectionName || null,
+            roadName,
+            roadDirection,
+            geometrySource,
             dataCollectTime,
-
-            observedFrom:
-              "TravelSpeed",
-
+            dataAgeMin: evidence.dataAgeMin,
+            observedFrom: evidence.observedFrom,
+            evidenceConfidence: evidence.confidence,
+            evidenceReason: evidence.reason,
+            evidenceQualityScore: evidence.qualityScore,
+            travelTimeSec:
+              Number.isFinite(travelTimeSec) && travelTimeSec > 0
+                ? travelTimeSec
+                : null,
+            travelSpeedKmh:
+              Number.isFinite(travelSpeedKmh) && travelSpeedKmh > 0
+                ? travelSpeedKmh
+                : null,
+            sectionLengthKm: geometryLengthKm,
             source:
-              "TDX freeway/highway LiveTraffic"
+              sourceBundle.scope === "freeway"
+                ? "TDX Freeway LiveTraffic"
+                : "TDX Highway LiveTraffic",
           };
 
-
-          addSegmentToGrid(
-            grid,
-            cellDeg,
-            segment
-          );
-
-
+          addSegmentToGrid(grid, cellDeg, segment);
           segmentCount += 1;
+          if (geometrySource === "SectionShape") {
+            geometryDiagnostics.acceptedSegmentsCanonicalShape += 1;
+          } else {
+            geometryDiagnostics.acceptedSegmentsOpenLrFallback += 1;
+          }
         }
-      } catch {
-        // 單一 OpenLR decode 失敗不影響其他道路。
       }
     }
   }
 
-
   return {
     grid,
     cellDeg,
-    segmentCount
+    segmentCount,
+    evidenceDiagnostics,
+    geometryDiagnostics,
   };
 }
-
 
 function candidatesNear(
   point,
@@ -632,11 +995,18 @@ function findMatch(
     }
 
 
+    const candidateBearing =
+      Number.isFinite(Number(segment?.matchBearing))
+        ? Number(segment.matchBearing)
+        : Number(segment.bearing);
+
+    const directionDiffDeg = angleDiffDeg(
+      routeBearing,
+      candidateBearing
+    );
+
     if (
-      angleDiffDeg(
-        routeBearing,
-        segment.bearing
-      ) >
+      directionDiffDeg >
       maxDirectionDiffDeg
     ) {
       continue;
@@ -660,8 +1030,14 @@ function findMatch(
       bestDistanceKm =
         distanceKm;
 
-      best =
-        segment;
+      best = {
+        ...segment,
+        directionDiffDeg,
+        directionAxisDiffDeg: directionAxisDiffDeg(routeBearing, candidateBearing),
+        directionClass: "aligned",
+        candidateBearingDeg: candidateBearing,
+        rawCandidateBearingDeg: segment.bearing,
+      };
     }
   }
 
@@ -674,6 +1050,168 @@ function findMatch(
           bestDistanceKm
       }
     : null;
+}
+
+
+
+function inspectNearestTdxCandidate(
+  point,
+  routeBearing,
+  index,
+  thresholdKm,
+  maxDirectionDiffDeg,
+  scope
+) {
+  let best = null;
+  let bestDistanceKm = Infinity;
+
+  for (
+    const segment
+    of candidatesNear(
+      point,
+      index
+    )
+  ) {
+    const speed =
+      Number(
+        segment?.observedSpeedKmh
+      );
+
+    if (
+      !Number.isFinite(speed) ||
+      speed <= 0
+    ) {
+      continue;
+    }
+
+
+    const distanceKm =
+      pointToSegmentDistanceKm(
+        point,
+        segment.a,
+        segment.b
+      );
+
+
+    if (
+      !Number.isFinite(distanceKm) ||
+      distanceKm >= bestDistanceKm
+    ) {
+      continue;
+    }
+
+
+    const candidateBearing =
+      Number.isFinite(Number(segment?.matchBearing))
+        ? Number(segment.matchBearing)
+        : Number(segment?.bearing);
+
+    const directionDiffDeg =
+      Number.isFinite(candidateBearing)
+        ? angleDiffDeg(
+            routeBearing,
+            candidateBearing
+          )
+        : null;
+
+
+    bestDistanceKm =
+      distanceKm;
+
+
+    best = {
+      scope,
+
+      distanceKm,
+
+      directionDiffDeg,
+
+      directionAxisDiffDeg:
+        Number.isFinite(directionDiffDeg)
+          ? directionAxisDiffDeg(routeBearing, candidateBearing)
+          : null,
+
+      directionClass:
+        directionSemanticClass(directionDiffDeg, maxDirectionDiffDeg),
+
+      candidateBearingDeg:
+        Number.isFinite(candidateBearing) ? candidateBearing : null,
+
+      rawCandidateBearingDeg:
+        Number.isFinite(Number(segment?.bearing)) ? Number(segment.bearing) : null,
+
+      sectionId:
+        segment?.sectionId ||
+        null,
+
+      sectionName:
+        segment?.sectionName ||
+        null,
+
+      city:
+        segment?.city ||
+        null,
+
+      observedFrom:
+        segment?.observedFrom ||
+        null,
+
+      observedSpeedKmh:
+        speed
+    };
+  }
+
+
+  if (!best) {
+    return null;
+  }
+
+
+  const tooFar =
+    best.distanceKm >
+    thresholdKm;
+
+
+  const wrongDirection =
+    Number.isFinite(
+      best.directionDiffDeg
+    ) &&
+    best.directionDiffDeg >
+      maxDirectionDiffDeg;
+
+
+  let rejectionReason =
+    "eligible";
+
+
+  if (
+    tooFar &&
+    wrongDirection
+  ) {
+    rejectionReason =
+      "too_far+wrong_direction";
+
+  } else if (tooFar) {
+
+    rejectionReason =
+      "too_far";
+
+  } else if (
+    wrongDirection
+  ) {
+
+    rejectionReason =
+      "wrong_direction";
+  }
+
+
+  return {
+    ...best,
+
+    thresholdKm,
+
+    rejectionReason
+  };
 }
 
 
@@ -820,6 +1358,49 @@ function lineSegments(
 }
 
 
+function annotateRouteMatchBearings(segments) {
+  if (!Array.isArray(segments) || !segments.length) return segments || [];
+
+  const configuredMeters = Number(process.env.TDX_ROUTE_BEARING_WINDOW_M || 120);
+  const windowKm = Math.max(0.03, Math.min(0.4, configuredMeters / 1000));
+  const halfWindowKm = windowKm / 2;
+
+  const identity = (value) =>
+    String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+  for (let i = 0; i < segments.length; i += 1) {
+    const current = segments[i];
+    const roadIdentity = identity(current.roadName);
+    let left = i;
+    let right = i;
+    let leftKm = 0;
+    let rightKm = 0;
+
+    while (left > 0 && leftKm < halfWindowKm) {
+      const candidate = segments[left - 1];
+      if (roadIdentity && identity(candidate.roadName) !== roadIdentity) break;
+      left -= 1;
+      leftKm += Number(candidate.km || 0);
+    }
+
+    while (right < segments.length - 1 && rightKm < halfWindowKm) {
+      const candidate = segments[right + 1];
+      if (roadIdentity && identity(candidate.roadName) !== roadIdentity) break;
+      right += 1;
+      rightKm += Number(candidate.km || 0);
+    }
+
+    const a = segments[left]?.a;
+    const b = segments[right]?.b;
+    const smoothed = a && b ? bearingDeg(a, b) : current.bearing;
+    current.matchBearing = Number.isFinite(smoothed) ? smoothed : current.bearing;
+    current.matchBearingWindowKm = leftKm + Number(current.km || 0) + rightKm;
+  }
+
+  return segments;
+}
+
+
 function buildRouteSegments(
   route
 ) {
@@ -871,20 +1452,22 @@ function buildRouteSegments(
   if (
     segments.length
   ) {
-    return segments;
+    return annotateRouteMatchBearings(segments);
   }
 
 
-  return lineSegments(
-    route?.geometry
-      ?.coordinates ||
-      [],
+  return annotateRouteMatchBearings(
+    lineSegments(
+      route?.geometry
+        ?.coordinates ||
+        [],
 
-    Number(
-      route?.duration ||
-      0
-    ),
-    ""
+      Number(
+        route?.duration ||
+        0
+      ),
+      ""
+    )
   );
 }
 
@@ -1236,6 +1819,70 @@ function findVdMatch(
 }
 
 
+
+// UNCOVERED_PRIOR_V9_ENGINE
+function v9RoadType(
+  roadName,
+  match
+) {
+  const scope =
+    String(
+      match?.scope ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    scope === "freeway"
+  ) {
+    return "freeway";
+  }
+
+  if (
+    scope === "highway"
+  ) {
+    return "highway";
+  }
+
+  const name =
+    String(
+      roadName ||
+      ""
+    ).trim();
+
+  if (
+    /交流道|匝道|ramp/i
+      .test(name)
+  ) {
+    return "ramp";
+  }
+
+  if (
+    /快速道路|高架/
+      .test(name)
+  ) {
+    return "expressway";
+  }
+
+  if (
+    /^(?:台|省道|縣道|北|市)?\s*\d+[甲乙丙丁戊]?$/
+      .test(name)
+  ) {
+    return "numbered_road";
+  }
+
+  if (
+    /大道|路|街|巷|弄|橋/
+      .test(name)
+  ) {
+    return "urban_road";
+  }
+
+  return "other";
+}
+
+
 export function calculateTdxHybridEta({
   route,
   cityIndex,
@@ -1348,8 +1995,42 @@ export function calculateTdxHybridEta({
   let matchedCount = 0;
 
 
+  let positiveDelaySec =
+    0;
+
+  let positiveDelayAdjustedDistanceKm =
+    0;
+
+
+
   const sectionMap =
     new Map();
+
+  const matchedRunsRaw = [];
+  let activeMatchedRun = null;
+  let matchedRunSequence = 0;
+
+  const flushMatchedRun = () => {
+    if (!activeMatchedRun) return;
+    activeMatchedRun.positiveDelaySec = Math.max(
+      0,
+      activeMatchedRun.observedSec - activeMatchedRun.baselineSec
+    );
+    matchedRunsRaw.push(activeMatchedRun);
+    activeMatchedRun = null;
+  };
+
+
+  const unmatchedSegmentMap =
+    new Map();
+
+  // UNCOVERED_PRIOR_V9_TELEMETRY
+  const v9PriorTrainingGroups =
+    [];
+
+  const v9PriorUncoveredGroups =
+    [];
+
 
 
   for (
@@ -1364,7 +2045,7 @@ export function calculateTdxHybridEta({
     const cityMatch =
       findMatch(
         segment.midpoint,
-        segment.bearing,
+        segment.matchBearing ?? segment.bearing,
         cityIndex,
         cityMatchThresholdKm,
         maxDirectionDiffDeg
@@ -1374,7 +2055,7 @@ export function calculateTdxHybridEta({
     const roadMatch =
       findMatch(
         segment.midpoint,
-        segment.bearing,
+        segment.matchBearing ?? segment.bearing,
         roadIndex,
         roadMatchThresholdKm,
         maxDirectionDiffDeg
@@ -1433,7 +2114,7 @@ export function calculateTdxHybridEta({
       !match
         ? findVdMatch(
             segment.midpoint,
-            segment.bearing,
+            segment.matchBearing ?? segment.bearing,
             segment.roadName,
             vdIndex,
             vdMatchThresholdKm,
@@ -1470,6 +2151,31 @@ export function calculateTdxHybridEta({
           speed
         ) *
         3600;
+
+
+      /*
+       * Compare TDX observation with this
+       * exact route-piece baseline.
+       */
+      const segmentPositiveDelaySec =
+        Math.max(
+          0,
+          observedSec -
+            baselineSec
+        );
+
+
+      positiveDelaySec +=
+        segmentPositiveDelaySec;
+
+
+      if (
+        segmentPositiveDelaySec >
+        0
+      ) {
+        positiveDelayAdjustedDistanceKm +=
+          segment.km;
+      }
 
 
       expectedSec +=
@@ -1509,6 +2215,19 @@ export function calculateTdxHybridEta({
                 : "TDX LiveTraffic"
             ),
 
+          scope:
+            match.scope ||
+            (match.city ? "city" : null),
+
+          geometrySource:
+            match.geometrySource || null,
+
+          roadName:
+            match.roadName || null,
+
+          roadDirection:
+            match.roadDirection || null,
+
           city:
             match.city ||
             null,
@@ -1532,7 +2251,39 @@ export function calculateTdxHybridEta({
             match.dataCollectTime ||
             null,
 
+          dataAgeMin:
+            Number.isFinite(Number(match.dataAgeMin))
+              ? Number(match.dataAgeMin)
+              : null,
+
+          evidenceConfidence:
+            match.evidenceConfidence ||
+            null,
+
+          evidenceReason:
+            match.evidenceReason ||
+            null,
+
+          evidenceQualityScore:
+            Number.isFinite(Number(match.evidenceQualityScore))
+              ? Number(match.evidenceQualityScore)
+              : null,
+
+          travelSpeedKmh:
+            Number.isFinite(Number(match.travelSpeedKmh))
+              ? Number(match.travelSpeedKmh)
+              : null,
+
           matchedDistanceKm:
+            0,
+
+          baselineSec:
+            0,
+
+          observedSec:
+            0,
+
+          positiveDelaySec:
             0,
 
           nearestMatchKm:
@@ -1543,6 +2294,15 @@ export function calculateTdxHybridEta({
       current.matchedDistanceKm +=
         segment.km;
 
+      current.baselineSec +=
+        baselineSec;
+
+      current.observedSec +=
+        observedSec;
+
+      current.positiveDelaySec +=
+        segmentPositiveDelaySec;
+
 
       current.nearestMatchKm =
         Math.min(
@@ -1550,26 +2310,421 @@ export function calculateTdxHybridEta({
           match.matchDistanceKm
         );
 
+      if (!activeMatchedRun || activeMatchedRun.key !== key) {
+        flushMatchedRun();
+        matchedRunSequence += 1;
+        activeMatchedRun = {
+          runIndex: matchedRunSequence,
+          key,
+          source: current.source,
+          scope: current.scope,
+          geometrySource: current.geometrySource,
+          roadName: current.roadName,
+          roadDirection: current.roadDirection,
+          city: current.city,
+          sectionId: current.sectionId,
+          sectionName: current.sectionName,
+          observedFrom: current.observedFrom,
+          observedSpeedKmh: speed,
+          dataCollectTime: current.dataCollectTime,
+          dataAgeMin: current.dataAgeMin,
+          evidenceConfidence: current.evidenceConfidence,
+          evidenceReason: current.evidenceReason,
+          evidenceQualityScore: current.evidenceQualityScore,
+          travelSpeedKmh: current.travelSpeedKmh,
+          matchedDistanceKm: 0,
+          baselineSec: 0,
+          observedSec: 0,
+          positiveDelaySec: 0,
+          nearestMatchKm: Infinity,
+        };
+      }
+
+      activeMatchedRun.matchedDistanceKm += segment.km;
+      activeMatchedRun.baselineSec += baselineSec;
+      activeMatchedRun.observedSec += observedSec;
+      activeMatchedRun.nearestMatchKm = Math.min(
+        activeMatchedRun.nearestMatchKm,
+        match.matchDistanceKm
+      );
+
 
       sectionMap.set(
         key,
         current
       );
 
+      /*
+       * V9 training evidence:
+       * only segments that already passed
+       * the strict TDX map-matching policy.
+       *
+       * This does NOT change ETA here.
+       */
+      v9PriorTrainingGroups.push({
+        roadType:
+          v9RoadType(
+            segment.roadName,
+            match
+          ),
+
+        scope:
+          match?.scope ||
+          null,
+
+        city:
+          match?.city ||
+          null,
+
+        /*
+         * CURRENT_UNCOVERED_PROXY_V1
+         *
+         * Only high-confidence live evidence may
+         * be extrapolated to an uncovered piece.
+         */
+        evidenceConfidence:
+          match?.evidenceConfidence ||
+          null,
+
+        evidenceReason:
+          match?.evidenceReason ||
+          null,
+
+        observedFrom:
+          match?.observedFrom ||
+          null,
+
+        distanceKm:
+          Number(
+            segment.km ||
+            0
+          ),
+
+        baselineSec:
+          Number(
+            baselineSec ||
+            0
+          ),
+
+        observedSec:
+          Number(
+            observedSec ||
+            0
+          ),
+
+        point:
+          segment.midpoint ||
+          null,
+      });
+
     } else {
+      flushMatchedRun();
       /*
         沒有可靠 TDX match：
         保留這一小段原本 OSRM step duration。
       */
+
+      const uncoveredRoadName =
+        String(
+          segment.roadName ||
+          "(unnamed)"
+        ).trim() ||
+        "(unnamed)";
+
+
+      const currentUnmatched =
+        unmatchedSegmentMap.get(
+          uncoveredRoadName
+        ) ||
+        {
+          roadName:
+            uncoveredRoadName,
+
+          distanceKm:
+            0,
+
+          baselineSec:
+            0,
+
+          segmentCount:
+            0,
+
+          rejectionCounts:
+            {},
+
+          nearestCandidateKm:
+            Infinity,
+
+          nearestCandidateScope:
+            null,
+
+          nearestCandidateSectionId:
+            null,
+
+          nearestCandidateSectionName:
+            null,
+
+          nearestCandidateGeometrySource:
+            null,
+
+          nearestCandidateRoadName:
+            null,
+
+          nearestCandidateRoadDirection:
+            null,
+
+          nearestCandidateDirectionDiffDeg:
+            null,
+
+          nearestCandidateDirectionAxisDiffDeg:
+            null,
+
+          nearestCandidateDirectionClass:
+            null,
+
+          nearestCandidateReason:
+            null,
+
+          nearestCandidateSpeedKmh:
+            null,
+
+          uncoveredClass:
+            "no_candidate"
+        };
+
+
+      const cityCandidateDiagnostic =
+        inspectNearestTdxCandidate(
+          segment.midpoint,
+          segment.matchBearing ?? segment.bearing,
+          cityIndex,
+          cityMatchThresholdKm,
+          maxDirectionDiffDeg,
+          "city"
+        );
+
+
+      const roadCandidateDiagnostic =
+        inspectNearestTdxCandidate(
+          segment.midpoint,
+          segment.matchBearing ?? segment.bearing,
+          roadIndex,
+          roadMatchThresholdKm,
+          maxDirectionDiffDeg,
+          "freeway/highway"
+        );
+
+
+      const candidateDiagnostics =
+        [
+          cityCandidateDiagnostic,
+          roadCandidateDiagnostic
+        ]
+          .filter(Boolean)
+          .sort(
+            (a, b) =>
+              a.distanceKm -
+              b.distanceKm
+          );
+
+
+      const nearestCandidateDiagnostic =
+        candidateDiagnostics[0] ||
+        null;
+
+
+      const rejectionReason =
+        nearestCandidateDiagnostic
+          ?.rejectionReason ||
+        "no_candidate";
+
+      const classificationThresholdKm =
+        nearestCandidateDiagnostic?.scope === "city"
+          ? cityMatchThresholdKm
+          : roadMatchThresholdKm;
+
+      currentUnmatched.uncoveredClass = classifyUncoveredCandidateV7_2({
+        candidate: nearestCandidateDiagnostic,
+        thresholdKm: classificationThresholdKm,
+      });
+
+
+      currentUnmatched
+        .rejectionCounts[
+          rejectionReason
+        ] =
+          (
+            currentUnmatched
+              .rejectionCounts[
+                rejectionReason
+              ] ||
+            0
+          ) +
+          1;
+
+
+      if (
+        nearestCandidateDiagnostic &&
+        nearestCandidateDiagnostic
+          .distanceKm <
+          currentUnmatched
+            .nearestCandidateKm
+      ) {
+        currentUnmatched
+          .nearestCandidateKm =
+            nearestCandidateDiagnostic
+              .distanceKm;
+
+
+        currentUnmatched
+          .nearestCandidateScope =
+            nearestCandidateDiagnostic
+              .scope;
+
+
+        currentUnmatched
+          .nearestCandidateSectionId =
+            nearestCandidateDiagnostic
+              .sectionId;
+
+
+        currentUnmatched
+          .nearestCandidateSectionName =
+            nearestCandidateDiagnostic
+              .sectionName;
+
+
+        currentUnmatched
+          .nearestCandidateGeometrySource =
+            nearestCandidateDiagnostic
+              .geometrySource || null;
+
+
+        currentUnmatched
+          .nearestCandidateRoadName =
+            nearestCandidateDiagnostic
+              .roadName || null;
+
+
+        currentUnmatched
+          .nearestCandidateRoadDirection =
+            nearestCandidateDiagnostic
+              .roadDirection || null;
+
+
+        currentUnmatched
+          .nearestCandidateDirectionDiffDeg =
+            nearestCandidateDiagnostic
+              .directionDiffDeg;
+
+
+        currentUnmatched
+          .nearestCandidateDirectionAxisDiffDeg =
+            nearestCandidateDiagnostic
+              .directionAxisDiffDeg;
+
+
+        currentUnmatched
+          .nearestCandidateDirectionClass =
+            nearestCandidateDiagnostic
+              .directionClass;
+
+
+        currentUnmatched
+          .nearestCandidateReason =
+            nearestCandidateDiagnostic
+              .rejectionReason;
+
+
+        currentUnmatched
+          .nearestCandidateSpeedKmh =
+            nearestCandidateDiagnostic
+              .observedSpeedKmh;
+      }
+
+
+      currentUnmatched.distanceKm +=
+        segment.km;
+
+
+      currentUnmatched.baselineSec +=
+        baselineSec;
+
+
+      currentUnmatched.segmentCount +=
+        1;
+
+
+      unmatchedSegmentMap.set(
+        uncoveredRoadName,
+        currentUnmatched
+      );
+
 
       expectedSec +=
         baselineSec;
 
       osrmFallbackSec +=
         baselineSec;
+
+      /*
+       * V9 uncovered target:
+       * still uses original router baseline here.
+       * No historical multiplier is applied
+       * inside the matching engine.
+       */
+      v9PriorUncoveredGroups.push({
+        roadType:
+          v9RoadType(
+            segment.roadName,
+            null
+          ),
+
+        scope:
+          null,
+
+        city:
+          null,
+
+        distanceKm:
+          Number(
+            segment.km ||
+            0
+          ),
+
+        baselineSec:
+          Number(
+            baselineSec ||
+            0
+          ),
+
+        observedSec:
+          null,
+
+        point:
+          segment.midpoint ||
+          null,
+      });
     }
   }
 
+
+  flushMatchedRun();
+
+  positiveDelaySec = matchedRunsRaw.reduce(
+    (sum, run) => sum + Math.max(0, Number(run.positiveDelaySec || 0)),
+    0
+  );
+
+  positiveDelayAdjustedDistanceKm = matchedRunsRaw.reduce(
+    (sum, run) =>
+      sum + (Number(run.positiveDelaySec || 0) > 0 ? Number(run.matchedDistanceKm || 0) : 0),
+    0
+  );
+
+  // Safe ETA: full router baseline + only positive delay after each contiguous
+  // TDX section run has been netted internally.
+  expectedSec = baseOsrmSec + positiveDelaySec;
 
   const coverage =
     Math.max(
@@ -1601,6 +2756,39 @@ export function calculateTdxHybridEta({
             3
           ),
 
+        baselineSec:
+          round(
+            item.baselineSec,
+            2
+          ),
+
+        observedSec:
+          round(
+            item.observedSec,
+            2
+          ),
+
+        baselineMin:
+          round(
+            item.baselineSec /
+              60,
+            3
+          ),
+
+        observedMin:
+          round(
+            item.observedSec /
+              60,
+            3
+          ),
+
+        positiveDelayMin:
+          round(
+            Math.max(0, item.observedSec - item.baselineSec) /
+              60,
+            3
+          ),
+
         nearestMatchKm:
           round(
             item.nearestMatchKm,
@@ -1618,10 +2806,143 @@ export function calculateTdxHybridEta({
       );
 
 
+  const matchedRuns = matchedRunsRaw.map((run) => ({
+    ...run,
+    observedSpeedKmh: round(run.observedSpeedKmh, 1),
+    matchedDistanceKm: round(run.matchedDistanceKm, 3),
+    baselineSec: round(run.baselineSec, 2),
+    observedSec: round(run.observedSec, 2),
+    baselineMin: round(run.baselineSec / 60, 3),
+    observedMin: round(run.observedSec / 60, 3),
+    positiveDelaySec: round(run.positiveDelaySec, 2),
+    positiveDelayMin: round(run.positiveDelaySec / 60, 3),
+    nearestMatchKm: round(run.nearestMatchKm, 3),
+  }));
+
+
+  const unmatchedSegments =
+    [
+      ...unmatchedSegmentMap.values()
+    ]
+      .map((item) => ({
+        roadName:
+          item.roadName,
+
+        distanceKm:
+          round(
+            item.distanceKm,
+            3
+          ),
+
+        baselineMin:
+          round(
+            item.baselineSec /
+              60,
+            3
+          ),
+
+        segmentCount:
+          item.segmentCount,
+
+        rejectionCounts:
+          item.rejectionCounts ||
+          {},
+
+        nearestCandidateM:
+          Number.isFinite(
+            item.nearestCandidateKm
+          )
+            ? round(
+                item.nearestCandidateKm *
+                  1000,
+                1
+              )
+            : null,
+
+        nearestCandidateScope:
+          item.nearestCandidateScope ||
+          null,
+
+        nearestCandidateSectionId:
+          item.nearestCandidateSectionId ||
+          null,
+
+        nearestCandidateSectionName:
+          item.nearestCandidateSectionName ||
+          null,
+
+        nearestCandidateGeometrySource:
+          item.nearestCandidateGeometrySource ||
+          null,
+
+        nearestCandidateRoadName:
+          item.nearestCandidateRoadName ||
+          null,
+
+        nearestCandidateRoadDirection:
+          item.nearestCandidateRoadDirection ||
+          null,
+
+        nearestCandidateDirectionDiffDeg:
+          Number.isFinite(
+            item.nearestCandidateDirectionDiffDeg
+          )
+            ? round(
+                item.nearestCandidateDirectionDiffDeg,
+                1
+              )
+            : null,
+
+        nearestCandidateDirectionAxisDiffDeg:
+          Number.isFinite(
+            item.nearestCandidateDirectionAxisDiffDeg
+          )
+            ? round(
+                item.nearestCandidateDirectionAxisDiffDeg,
+                1
+              )
+            : null,
+
+        nearestCandidateDirectionClass:
+          item.nearestCandidateDirectionClass ||
+          null,
+
+        nearestCandidateReason:
+          item.nearestCandidateReason ||
+          null,
+
+        nearestCandidateSpeedKmh:
+          Number.isFinite(
+            item.nearestCandidateSpeedKmh
+          )
+            ? round(
+                item.nearestCandidateSpeedKmh,
+                1
+              )
+            : null,
+
+        uncoveredClass:
+          item.uncoveredClass ||
+          "no_candidate"
+      }))
+      .sort(
+        (a, b) =>
+          b.baselineMin -
+          a.baselineMin
+      )
+      .slice(
+        0,
+        30
+      );
+
+
   return {
     expectedMin:
       round(
-        expectedSec / 60,
+        Math.max(
+          expectedSec,
+          baseOsrmSec
+        ) / 60,
         3
       ),
 
@@ -1664,17 +2985,40 @@ export function calculateTdxHybridEta({
 
     delayMin:
       round(
-        (
+        Math.max(
+          0,
           expectedSec -
-          baseOsrmSec
+            baseOsrmSec
         ) /
         60,
         3
       ),
 
+    positiveDelayMin:
+      round(
+        positiveDelaySec /
+          60,
+        3
+      ),
+
+    positiveDelayAdjustedDistanceKm:
+      round(
+        positiveDelayAdjustedDistanceKm,
+        3
+      ),
+
+
     matchedCount,
 
     matchedSections,
+
+    matchedRuns,
+
+    unmatchedSegments,
+
+    v9PriorTrainingGroups,
+
+    v9PriorUncoveredGroups,
 
     latestLiveDataTime:
       latestIso(
@@ -1701,6 +3045,21 @@ export function calculateTdxHybridEta({
 
       maxDirectionDiffDeg,
 
+      routeBearingMode:
+        "same-road smoothed corridor bearing",
+
+      routeBearingWindowM:
+        Math.max(30, Math.min(400, Number(process.env.TDX_ROUTE_BEARING_WINDOW_M || 120))),
+
+      reverseGeometryAutoAccepted:
+        false,
+
+      directionSemantics:
+        "directed match remains strict; near-180 geometry is classified separately instead of being silently accepted",
+
+      roadGeometryPolicy:
+        "Freeway/Highway SectionShape is canonical when available; live OpenLR geometry is a fallback only",
+
       vdRule:
         "Supplemental diagnostic only. VD spot speed is NOT currently used to replace route-segment ETA.",
 
@@ -1714,7 +3073,7 @@ export function calculateTdxHybridEta({
         false,
 
       speedClampAgainstOsrm:
-        false
+        true
     }
   };
 }

@@ -144,18 +144,63 @@ function safeName(value) {
     .replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function cacheFilePath(city, date, timeBucket) {
-  const bucket = normalizeBucket(timeBucket).replace(":", "");
+function historicalCacheKey({
+  scope = "city",
+  city = "",
+}) {
+  const normalizedScope =
+    normalizeHistoricalScope(scope);
+
+  if (normalizedScope === "city") {
+    return (
+      `City-${String(city || "").trim()}`
+    );
+  }
+
+  if (normalizedScope === "freeway") {
+    return "Freeway";
+  }
+
+  return "Highway";
+}
+
+function cacheFilePath(
+  scope,
+  city,
+  date,
+  timeBucket
+) {
+  const bucket =
+    normalizeBucket(
+      timeBucket
+    ).replace(":", "");
+
+  const key =
+    historicalCacheKey({
+      scope,
+      city,
+    });
 
   return path.join(
     CACHE_DIR,
-    safeName(city),
+    safeName(key),
     `${safeName(date)}-${bucket}.json`
   );
 }
 
-async function readCache(city, date, timeBucket) {
-  const file = cacheFilePath(city, date, timeBucket);
+async function readCache(
+  scope,
+  city,
+  date,
+  timeBucket
+) {
+const file =
+  cacheFilePath(
+    scope,
+    city,
+    date,
+    timeBucket
+  );
 
   try {
     const text = await fs.readFile(file, "utf8");
@@ -186,8 +231,20 @@ async function readCache(city, date, timeBucket) {
   }
 }
 
-async function writeCache(city, date, timeBucket, data) {
-  const file = cacheFilePath(city, date, timeBucket);
+async function writeCache(
+  scope,
+  city,
+  date,
+  timeBucket,
+  data
+) {
+  const file =
+    cacheFilePath(
+      scope,
+      city,
+      date,
+      timeBucket
+    );
 
   await fs.mkdir(path.dirname(file), {
     recursive: true,
@@ -244,43 +301,128 @@ async function fetchHistoricalCsvOnce(url, token) {
   }
 }
 
-async function openHistoricalCsv({ city, date }) {
-  const token = await getTdxAccessToken();
+function normalizeHistoricalScope(scope) {
+  const value =
+    String(scope || "city")
+      .trim()
+      .toLowerCase();
+
+  if (
+    value === "city" ||
+    value === "freeway" ||
+    value === "highway"
+  ) {
+    return value;
+  }
+
+  throw new Error(
+    `Unsupported historical scope: ${scope}`
+  );
+}
+
+function historicalEndpointPath({
+  scope,
+  city,
+}) {
+  const normalizedScope =
+    normalizeHistoricalScope(scope);
+
+  if (normalizedScope === "city") {
+    const cityName =
+      String(city || "").trim();
+
+    if (!cityName) {
+      throw new Error(
+        "Missing historical TDX city"
+      );
+    }
+
+    return (
+      "Historical/Road/Traffic/Live/City/" +
+      encodeURIComponent(cityName)
+    );
+  }
+
+  if (normalizedScope === "freeway") {
+    return (
+      "Historical/Road/Traffic/Live/Freeway"
+    );
+  }
+
+  return (
+    "Historical/Road/Traffic/Live/Highway"
+  );
+}
+
+async function openHistoricalCsv({
+  scope = "city",
+  city = "",
+  date,
+}) {
+  const token =
+    await getTdxAccessToken();
+
+  const endpoint =
+    historicalEndpointPath({
+      scope,
+      city,
+    });
 
   const url =
     `https://tdx.transportdata.tw/api/historical/v2/` +
-    `Historical/Road/Traffic/Live/City/${encodeURIComponent(city)}` +
-    `?Dates=${encodeURIComponent(date)}&%24format=CSV`;
+    endpoint +
+    `?Dates=${encodeURIComponent(date)}` +
+    `&%24format=CSV`;
 
-  let response = await fetchHistoricalCsvOnce(url, token);
+  let response =
+    await fetchHistoricalCsvOnce(
+      url,
+      token
+    );
 
-  // Historical files are very large. Respect Retry-After and retry 429 once.
   if (response.status === 429) {
-    const waitMs = retryAfterMs(response);
+    const waitMs =
+      retryAfterMs(response);
 
     try {
       await response.body?.cancel();
     } catch {}
 
     console.log(
-      `TDX Historical rate limited; waiting ${Math.ceil(waitMs / 1000)} sec...`
+      `TDX Historical rate limited; waiting ${Math.ceil(
+        waitMs / 1000
+      )} sec...`
     );
 
     await sleep(waitMs);
-    response = await fetchHistoricalCsvOnce(url, token);
+
+    response =
+      await fetchHistoricalCsvOnce(
+        url,
+        token
+      );
   }
 
   if (!response.ok) {
-    const text = await response.text();
-    const error = new Error(
-      `TDX Historical HTTP ${response.status}: ${text.slice(0, 500)}`
-    );
-    error.status = response.status;
+    const text =
+      await response.text();
+
+    const error =
+      new Error(
+        `TDX Historical HTTP ${response.status}: ` +
+        text.slice(0, 500)
+      );
+
+    error.status =
+      response.status;
+
     throw error;
   }
 
   if (!response.body) {
-    throw new Error("TDX Historical response has no body");
+    throw new Error(
+      "TDX Historical response has no body"
+    );
   }
 
   return response;
@@ -347,10 +489,37 @@ function buildSectionStats(sectionId, accumulator) {
   };
 }
 
-function emptyBucketResult({ city, date, timeBucket, totalDataRows, createdAt }) {
+function emptyBucketResult({
+  scope = "city",
+  city,
+  date,
+  timeBucket,
+  totalDataRows,
+  createdAt,
+}) {
+  /*
+   * EMPTY_BUCKET_SCOPE_FIX_V1
+   *
+   * emptyBucketResult previously referenced
+   * normalizedScope without defining it.
+   */
+  const normalizedScope =
+    normalizeHistoricalScope(
+      scope
+    );
+
   return {
     cacheVersion: CACHE_VERSION,
-    source: "TDX Historical Road/Traffic/Live/City CSV",
+
+    scope:
+      normalizedScope,
+
+    source:
+      normalizedScope === "city"
+        ? `TDX Historical Road/Traffic/Live/City/${city} CSV`
+        : normalizedScope === "freeway"
+          ? "TDX Historical Road/Traffic/Live/Freeway CSV"
+          : "TDX Historical Road/Traffic/Live/Highway CSV",
     city,
     date,
     timeBucket,
@@ -364,12 +533,23 @@ function emptyBucketResult({ city, date, timeBucket, totalDataRows, createdAt })
   };
 }
 
-async function downloadAndBuildWholeDay({ city, date }) {
+async function downloadAndBuildWholeDay({
+  scope = "city",
+  city = "",
+  date,
+}) {
+    const normalizedScope =
+    normalizeHistoricalScope(
+      scope
+    );
   console.log(
     `[history cache] START DAY ${city} ${date}`
   );
 
-  const response = await openHistoricalCsv({
+ const response =
+  await openHistoricalCsv({
+    scope:
+      normalizedScope,
     city,
     date,
   });
@@ -406,15 +586,24 @@ async function downloadAndBuildWholeDay({ city, date }) {
         travelTime: header.indexOf("TravelTime"),
         travelSpeed: header.indexOf("TravelSpeed"),
         dataCollectTime: header.indexOf("DataCollectTime"),
+        infoDate:
+  header.indexOf("InfoDate"),
       };
 
-      for (const [name, index] of Object.entries(indexes)) {
-        if (index < 0) {
-          throw new Error(
-            `TDX Historical CSV missing required column: ${name}`
-          );
-        }
-      }
+     for (
+  const name of [
+    "sectionId",
+    "travelTime",
+    "travelSpeed",
+    "dataCollectTime",
+  ]
+) {
+  if (indexes[name] < 0) {
+    throw new Error(
+      `TDX Historical CSV missing required column: ${name}`
+    );
+  }
+}
 
       return;
     }
@@ -429,6 +618,28 @@ async function downloadAndBuildWholeDay({ city, date }) {
     }
 
     const values = parseCsvLine(line);
+    if (
+  indexes.infoDate >= 0
+) {
+  const infoDate =
+    String(
+      values[
+        indexes.infoDate
+      ] || ""
+    ).trim();
+
+  /*
+   * TDX archive occasionally contains
+   * a boundary observation belonging
+   * to the adjacent calendar day.
+   */
+  if (
+    infoDate &&
+    infoDate !== date
+  ) {
+    return;
+  }
+}
 
     const dataCollectTime = String(
       values[indexes.dataCollectTime] || ""
@@ -533,6 +744,9 @@ async function downloadAndBuildWholeDay({ city, date }) {
     for (const timeBucket of ALL_BUCKET_KEYS) {
       results[timeBucket] = {
         ...emptyBucketResult({
+          scope:
+            normalizedScope,
+
           city,
           date,
           timeBucket,
@@ -547,11 +761,12 @@ async function downloadAndBuildWholeDay({ city, date }) {
     await Promise.all(
       ALL_BUCKET_KEYS.map((timeBucket) =>
         writeCache(
-          city,
-          date,
-          timeBucket,
-          results[timeBucket]
-        )
+normalizedScope,
+  city,
+  date,
+  timeBucket,
+  results[timeBucket]
+)
       )
     );
 
@@ -601,12 +816,13 @@ async function downloadAndBuildWholeDay({ city, date }) {
   // One completed daily download materializes all 48 half-hour caches.
   await Promise.all(
     ALL_BUCKET_KEYS.map((timeBucket) =>
-      writeCache(
-        city,
-        date,
-        timeBucket,
-        results[timeBucket]
-      )
+     writeCache(
+normalizedScope,
+  city,
+  date,
+  timeBucket,
+  results[timeBucket]
+)
     )
   );
 
@@ -620,81 +836,140 @@ async function downloadAndBuildWholeDay({ city, date }) {
   return results;
 }
 
-export async function getHistoricalCityBucket({
-  city,
+export async function getHistoricalRoadBucket({
+  scope = "city",
+  city = "",
   date,
   timeBucket,
   forceRefresh = false,
   cacheOnly = false,
 }) {
-  const cityName = String(city || "").trim();
-  const dateKey = String(date || "").trim();
-  const bucket = normalizeBucket(timeBucket);
+  const normalizedScope =
+    normalizeHistoricalScope(
+      scope
+    );
 
-  if (!cityName) {
-    throw new Error("Missing historical TDX city");
+  const cityName =
+    normalizedScope === "city"
+      ? String(
+          city || ""
+        ).trim()
+      : "";
+
+  const dateKey =
+    String(
+      date || ""
+    ).trim();
+
+  const bucket =
+    normalizeBucket(
+      timeBucket
+    );
+
+  if (
+    normalizedScope ===
+      "city" &&
+    !cityName
+  ) {
+    throw new Error(
+      "Missing historical TDX city"
+    );
   }
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(
+      dateKey
+    )
+  ) {
     throw new Error(
       `Invalid historical date: ${dateKey}`
     );
   }
 
+  const cacheLabel =
+    historicalCacheKey({
+      scope:
+        normalizedScope,
+      city:
+        cityName,
+    });
+
   if (!forceRefresh) {
-    const cached = await readCache(
-      cityName,
-      dateKey,
-      bucket
-    );
+    const cached =
+      await readCache(
+        normalizedScope,
+        cityName,
+        dateKey,
+        bucket
+      );
 
     if (cached) {
       console.log(
-        `[history cache] HIT ${cityName} ${dateKey} ${bucket}`
+        `[history cache] HIT ${cacheLabel} ${dateKey} ${bucket}`
       );
+
       return cached;
     }
   }
 
-  // Strict cache-only callers (navigation) return immediately on a miss.
-  // They do not start OR wait for any remote Historical download.
+  /*
+   * Navigation requests must not
+   * download large Historical files.
+   */
   if (cacheOnly) {
     console.log(
-      `[history cache] MISS ${cityName} ${dateKey} ${bucket} (cache-only)`
+      `[history cache] MISS ${cacheLabel} ${dateKey} ${bucket} (cache-only)`
     );
+
     return null;
   }
 
   const flightKey =
-    `${cityName}|${dateKey}`;
+    `${normalizedScope}|` +
+    `${cityName}|` +
+    `${dateKey}`;
 
   const existingFlight =
-    historicalDayInFlight.get(flightKey);
-
-  // Joining an already-running day download does not create another TDX call.
-  if (existingFlight) {
-    console.log(
-      `[history cache] JOIN DAY ${cityName} ${dateKey} (need ${bucket})`
+    historicalDayInFlight.get(
+      flightKey
     );
 
-    const results = await existingFlight;
-    return results[bucket] || null;
+  if (existingFlight) {
+    console.log(
+      `[history cache] JOIN DAY ${cacheLabel} ${dateKey} (need ${bucket})`
+    );
+
+    const results =
+      await existingFlight;
+
+    return (
+      results[bucket] ||
+      null
+    );
   }
 
   const flight =
     enqueueHistoricalDownload(
       async () => {
         console.log(
-          `[history cache] QUEUED DAY DOWNLOAD ${cityName} ${dateKey}`
+          `[history cache] QUEUED DAY DOWNLOAD ${cacheLabel} ${dateKey}`
         );
 
         return await downloadAndBuildWholeDay({
-          city: cityName,
-          date: dateKey,
+          scope:
+            normalizedScope,
+
+          city:
+            cityName,
+
+          date:
+            dateKey,
         });
       }
     ).finally(() => {
-      historicalDayInFlight.delete(flightKey);
+      historicalDayInFlight.delete(
+        flightKey
+      );
     });
 
   historicalDayInFlight.set(
@@ -702,17 +977,48 @@ export async function getHistoricalCityBucket({
     flight
   );
 
-  const results = await flight;
-  return results[bucket] || null;
+  const results =
+    await flight;
+
+  return (
+    results[bucket] ||
+    null
+  );
 }
 
+
+/*
+ * Backwards compatibility:
+ * existing City code can keep
+ * calling this function.
+ */
+export async function getHistoricalCityBucket(
+  options
+) {
+  return getHistoricalRoadBucket({
+    ...options,
+    scope: "city",
+  });
+}
 export async function getHistoricalSectionStats({
-  city,
+  scope = "city",
+  city = "",
   date,
   timeBucket,
   sectionIds,
   cacheOnly = false,
 }) {
+    const normalizedScope =
+    normalizeHistoricalScope(
+      scope
+    );
+
+  const cityName =
+    normalizedScope === "city"
+      ? String(
+          city || ""
+        ).trim()
+      : "";
   const ids = [
     ...new Set(
       (sectionIds || [])
@@ -733,10 +1039,18 @@ export async function getHistoricalSectionStats({
     };
   }
 
-  const bucket = await getHistoricalCityBucket({
-    city,
+  const bucket =
+  await getHistoricalRoadBucket({
+    scope:
+      normalizedScope,
+
+    city:
+      cityName,
+
     date,
+
     timeBucket,
+
     cacheOnly,
   });
 

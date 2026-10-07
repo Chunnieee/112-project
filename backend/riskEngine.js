@@ -1,16 +1,23 @@
 import "dotenv/config";
+
 import {
   getHistoricalSectionStats,
 } from "./historicalTrafficClient.js";
-import {
-  upsertHistoricalObservation,
-  getHistoricalObservations,
-} from "./historicalDb.js";
 
-function envInteger(name, fallback, minimum = 1) {
-  const value = Number(process.env[name]);
 
-  if (!Number.isFinite(value)) {
+function envInteger(
+  name,
+  fallback,
+  minimum = 1
+) {
+  const value =
+    Number(
+      process.env[name]
+    );
+
+  if (
+    !Number.isFinite(value)
+  ) {
     return fallback;
   }
 
@@ -20,125 +27,224 @@ function envInteger(name, fallback, minimum = 1) {
   );
 }
 
-const MIN_UNIQUE_DAYS = envInteger(
-  "RISK_MIN_UNIQUE_DAYS",
-  8,
-  3
-);
 
-const LOOKBACK_WEEKS = Math.max(
-  MIN_UNIQUE_DAYS,
+const MIN_UNIQUE_DAYS =
   envInteger(
-    "RISK_HISTORY_LOOKBACK_WEEKS",
-    26,
-    MIN_UNIQUE_DAYS
-  )
-);
+    "RISK_MIN_UNIQUE_DAYS",
+    8,
+    3
+  );
+
+
+/*
+ * HISTORICAL_20_TARGET_FINAL_V1
+ *
+ * 8 usable days  = Historical Ready
+ * 20 usable days = Background target
+ */
+const TARGET_UNIQUE_DAYS =
+  Math.max(
+    MIN_UNIQUE_DAYS,
+    envInteger(
+      "RISK_TARGET_UNIQUE_DAYS",
+      20,
+      MIN_UNIQUE_DAYS
+    )
+  );
+
+
+const LOOKBACK_WEEKS =
+  Math.max(
+    TARGET_UNIQUE_DAYS,
+
+    envInteger(
+      "RISK_HISTORY_LOOKBACK_WEEKS",
+      26,
+      TARGET_UNIQUE_DAYS
+    )
+  );
+
 
 console.log(
-  `[risk history] config: minimum=${MIN_UNIQUE_DAYS} unique days, lookback=${LOOKBACK_WEEKS} weeks, mode=cache-only`
-);
-console.log(
-  `[risk history] navigation requests will never download TDX Historical data`
+  `[risk history] config: minimum=${MIN_UNIQUE_DAYS} unique days, target=${TARGET_UNIQUE_DAYS} unique days, lookback=${LOOKBACK_WEEKS} weeks`
 );
 
-function round(value, digits = 2) {
-  const n = Number(value);
 
-  if (!Number.isFinite(n)) {
+function round(
+  value,
+  digits = 2
+) {
+  const n =
+    Number(value);
+
+  if (
+    !Number.isFinite(n)
+  ) {
     return null;
   }
 
-  const p = 10 ** digits;
-  return Math.round(n * p) / p;
-}
+  const p =
+    10 ** digits;
 
-function clamp(value, min, max) {
-  return Math.max(
-    min,
-    Math.min(max, value)
+  return (
+    Math.round(n * p) /
+    p
   );
 }
+
+
+function clamp(
+  value,
+  min,
+  max
+) {
+  return Math.max(
+    min,
+    Math.min(
+      max,
+      value
+    )
+  );
+}
+
 
 function taipeiCurrentParts() {
   const parts =
     new Intl.DateTimeFormat(
       "en-CA",
       {
-        timeZone: "Asia/Taipei",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        weekday: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      }
-    ).formatToParts(new Date());
+        timeZone:
+          "Asia/Taipei",
 
-  const map = Object.fromEntries(
-    parts.map((part) => [
-      part.type,
-      part.value,
-    ])
-  );
+        year:
+          "numeric",
+
+        month:
+          "2-digit",
+
+        day:
+          "2-digit",
+
+        weekday:
+          "short",
+
+        hour:
+          "2-digit",
+
+        minute:
+          "2-digit",
+
+        hourCycle:
+          "h23",
+      }
+    ).formatToParts(
+      new Date()
+    );
+
+  const map =
+    Object.fromEntries(
+      parts.map(
+        (part) => [
+          part.type,
+          part.value,
+        ]
+      )
+    );
 
   return {
     dateKey:
       `${map.year}-${map.month}-${map.day}`,
-    weekday: map.weekday,
-    hour: Number(map.hour),
-    minute: Number(map.minute),
+
+    weekday:
+      map.weekday,
+
+    hour:
+      Number(
+        map.hour
+      ),
+
+    minute:
+      Number(
+        map.minute
+      ),
   };
 }
+
 
 function resolveTimeBucket(
   departureTime,
   currentHour,
   currentMinute
 ) {
-  let hour = currentHour;
-  let minute = currentMinute;
+  let hour =
+    currentHour;
 
-  const match = String(
-    departureTime || ""
-  ).match(/^(\d{1,2}):(\d{2})$/);
+  let minute =
+    currentMinute;
+
+  const match =
+    String(
+      departureTime ||
+      ""
+    ).match(
+      /^(\d{1,2}):(\d{2})$/
+    );
 
   if (match) {
     const requestedHour =
-      Number(match[1]);
+      Number(
+        match[1]
+      );
 
     const requestedMinute =
-      Number(match[2]);
+      Number(
+        match[2]
+      );
 
     if (
-      Number.isInteger(requestedHour) &&
+      Number.isInteger(
+        requestedHour
+      ) &&
       requestedHour >= 0 &&
       requestedHour <= 23 &&
-      Number.isInteger(requestedMinute) &&
+      Number.isInteger(
+        requestedMinute
+      ) &&
       requestedMinute >= 0 &&
       requestedMinute <= 59
     ) {
-      hour = requestedHour;
-      minute = requestedMinute;
+      hour =
+        requestedHour;
+
+      minute =
+        requestedMinute;
     }
   }
 
   return (
-    `${String(hour).padStart(2, "0")}:` +
-    `${minute < 30 ? "00" : "30"}`
+    `${String(hour).padStart(
+      2,
+      "0"
+    )}:` +
+    `${
+      minute < 30
+        ? "00"
+        : "30"
+    }`
   );
 }
+
 
 function shiftDateKey(
   dateKey,
   deltaDays
 ) {
-  const match = String(
-    dateKey
-  ).match(
-    /^(\d{4})-(\d{2})-(\d{2})$/
-  );
+  const match =
+    String(
+      dateKey
+    ).match(
+      /^(\d{4})-(\d{2})-(\d{2})$/
+    );
 
   if (!match) {
     throw new Error(
@@ -146,25 +252,45 @@ function shiftDateKey(
     );
   }
 
-  const date = new Date(
-    Date.UTC(
-      Number(match[1]),
-      Number(match[2]) - 1,
-      Number(match[3]) +
-        Number(deltaDays || 0)
-    )
-  );
+  const date =
+    new Date(
+      Date.UTC(
+        Number(
+          match[1]
+        ),
+
+        Number(
+          match[2]
+        ) - 1,
+
+        Number(
+          match[3]
+        ) +
+          Number(
+            deltaDays ||
+            0
+          )
+      )
+    );
 
   return (
     `${date.getUTCFullYear()}-` +
     `${String(
-      date.getUTCMonth() + 1
-    ).padStart(2, "0")}-` +
+      date.getUTCMonth() +
+        1
+    ).padStart(
+      2,
+      "0"
+    )}-` +
     `${String(
       date.getUTCDate()
-    ).padStart(2, "0")}`
+    ).padStart(
+      2,
+      "0"
+    )}`
   );
 }
+
 
 function priorSameWeekdayDates(
   referenceDateKey,
@@ -188,63 +314,99 @@ function priorSameWeekdayDates(
   return result;
 }
 
+
 function nearestRank(
   sorted,
   probability
 ) {
-  if (!sorted.length) {
+  if (
+    !sorted.length
+  ) {
     return null;
   }
 
-  const index = Math.min(
-    sorted.length - 1,
-    Math.max(
-      0,
-      Math.ceil(
-        probability *
-          sorted.length
-      ) - 1
-    )
-  );
+  const index =
+    Math.min(
+      sorted.length - 1,
+
+      Math.max(
+        0,
+
+        Math.ceil(
+          probability *
+            sorted.length
+        ) - 1
+      )
+    );
 
   return sorted[index];
 }
 
-function empiricalStats(values) {
-  const sorted = values
-    .filter(Number.isFinite)
-    .sort(
-      (a, b) => a - b
-    );
 
-  if (!sorted.length) {
+function empiricalStats(
+  values
+) {
+  const sorted =
+    values
+      .filter(
+        Number.isFinite
+      )
+      .sort(
+        (a, b) =>
+          a - b
+      );
+
+  if (
+    !sorted.length
+  ) {
     return null;
   }
 
   const mean =
     sorted.reduce(
-      (sum, value) =>
-        sum + value,
+      (
+        sum,
+        value
+      ) =>
+        sum +
+        value,
+
       0
-    ) / sorted.length;
+    ) /
+    sorted.length;
 
   const variance =
     sorted.length > 1
       ? sorted.reduce(
-          (sum, value) =>
+          (
+            sum,
+            value
+          ) =>
             sum +
-            (value - mean) ** 2,
+            (
+              value -
+              mean
+            ) ** 2,
+
           0
         ) /
-        (sorted.length - 1)
+        (
+          sorted.length -
+          1
+        )
       : 0;
 
   const sd =
-    Math.sqrt(variance);
+    Math.sqrt(
+      variance
+    );
 
   return {
     meanMin:
-      round(mean, 1),
+      round(
+        mean,
+        1
+      ),
 
     medianMin:
       round(
@@ -285,91 +447,251 @@ function empiricalStats(values) {
     variance:
       round(
         variance,
-        2
+        4
       ),
 
     standardDeviationMin:
       round(
         sd,
-        1
+        3
       ),
 
     coefficientOfVariation:
       mean > 0
         ? round(
-            sd / mean,
-            3
+            sd /
+              mean,
+
+            4
           )
         : null,
   };
 }
 
-function cleanMatchedSections(
-  matchedCitySections
+
+/*
+ * Decide which TDX Historical
+ * archive owns a matched section.
+ */
+function normalizeSectionScope(
+  item
 ) {
-  return (
-    matchedCitySections || []
-  )
-    .map((item) => ({
-      city:
-        String(
-          item?.city || ""
-        ).trim(),
+  const explicit =
+    String(
+      item?.scope ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
 
-      sectionId:
-        String(
-          item?.sectionId || ""
-        ).trim(),
+  if (
+    explicit ===
+      "freeway" ||
+    explicit ===
+      "highway" ||
+    explicit ===
+      "city"
+  ) {
+    return explicit;
+  }
 
-      matchedDistanceKm:
-        Number(
-          item?.matchedDistanceKm
-        ),
+  /*
+   * Backward compatibility for
+   * existing City matched sections.
+   */
+  const city =
+    String(
+      item?.city ||
+      ""
+    ).trim();
 
-      sectionLengthKm:
-        Number(
-          item?.sectionLengthKm
-        ),
-    }))
-    .filter(
-      (item) =>
-        item.city &&
-        item.sectionId &&
-        Number.isFinite(
-          item.matchedDistanceKm
-        ) &&
-        item.matchedDistanceKm >
-          0
-    );
+  if (city) {
+    return "city";
+  }
+
+  return null;
 }
 
-function groupSectionsByCity(
+
+/*
+ * Normalize and aggregate route
+ * sections before Historical lookup.
+ *
+ * Key includes scope so an identical
+ * SectionID from different archives
+ * cannot accidentally collide.
+ */
+function cleanMatchedSections(
+  matchedSections
+) {
+  const map =
+    new Map();
+
+  for (
+    const item of
+    matchedSections || []
+  ) {
+    const scope =
+      normalizeSectionScope(
+        item
+      );
+
+    const city =
+      String(
+        item?.city ||
+        ""
+      ).trim();
+
+    const sectionId =
+      String(
+        item?.sectionId ||
+        ""
+      ).trim();
+
+    const matchedDistanceKm =
+      Number(
+        item?.matchedDistanceKm
+      );
+
+    const sectionLengthKm =
+      Number(
+        item?.sectionLengthKm
+      );
+
+    if (
+      !scope ||
+      !sectionId ||
+      !Number.isFinite(
+        matchedDistanceKm
+      ) ||
+      matchedDistanceKm <= 0
+    ) {
+      continue;
+    }
+
+    if (
+      scope === "city" &&
+      !city
+    ) {
+      continue;
+    }
+
+    const key =
+      scope === "city"
+        ? `${scope}:${city}:${sectionId}`
+        : `${scope}:${sectionId}`;
+
+    const existing =
+      map.get(key) || {
+        scope,
+        city:
+          scope ===
+            "city"
+            ? city
+            : "",
+
+        sectionId,
+
+        matchedDistanceKm:
+          0,
+
+        sectionLengthKm:
+          Number.isFinite(
+            sectionLengthKm
+          ) &&
+          sectionLengthKm > 0
+            ? sectionLengthKm
+            : null,
+      };
+
+    existing
+      .matchedDistanceKm +=
+      matchedDistanceKm;
+
+    /*
+     * Preserve a valid full
+     * section length if one exists.
+     */
+    if (
+      !existing.sectionLengthKm &&
+      Number.isFinite(
+        sectionLengthKm
+      ) &&
+      sectionLengthKm > 0
+    ) {
+      existing.sectionLengthKm =
+        sectionLengthKm;
+    }
+
+    map.set(
+      key,
+      existing
+    );
+  }
+
+  return [
+    ...map.values(),
+  ];
+}
+
+
+/*
+ * Historical lookup groups:
+ *
+ * city:Taipei
+ * city:Taichung
+ * freeway
+ * highway
+ */
+function groupSectionsBySource(
   sections
 ) {
   const grouped =
     new Map();
 
   for (
-    const section of sections
+    const section of
+    sections
   ) {
+    const key =
+      section.scope ===
+        "city"
+        ? `city:${section.city}`
+        : section.scope;
+
     if (
       !grouped.has(
-        section.city
+        key
       )
     ) {
       grouped.set(
-        section.city,
-        []
+        key,
+        {
+          scope:
+            section.scope,
+
+          city:
+            section.scope ===
+              "city"
+              ? section.city
+              : "",
+
+          sections: [],
+        }
       );
     }
 
     grouped
-      .get(section.city)
-      .push(section);
+      .get(key)
+      .sections
+      .push(
+        section
+      );
   }
 
   return grouped;
 }
+
 
 function historicalSpeedForSection(
   routeSection,
@@ -387,10 +709,11 @@ function historicalSpeedForSection(
         ?.sectionLengthKm
     );
 
-  // Mirror the live ETA policy:
-  // prefer a speed derived from
-  // TDX TravelTime when the
-  // full section length is known.
+  /*
+   * When full section length is
+   * known, TravelTime-derived speed
+   * mirrors the live ETA policy.
+   */
   if (
     Number.isFinite(
       historicalTravelTime
@@ -400,7 +723,8 @@ function historicalSpeedForSection(
     Number.isFinite(
       sectionLengthKm
     ) &&
-    sectionLengthKm > 0
+    sectionLengthKm >
+      0
   ) {
     const speed =
       sectionLengthKm /
@@ -410,7 +734,9 @@ function historicalSpeedForSection(
       );
 
     if (
-      Number.isFinite(speed) &&
+      Number.isFinite(
+        speed
+      ) &&
       speed >= 1 &&
       speed <= 160
     ) {
@@ -418,6 +744,12 @@ function historicalSpeedForSection(
     }
   }
 
+  /*
+   * Freeway / Highway matched
+   * sections normally do not carry
+   * full section length, so use
+   * TDX's Historical TravelSpeed.
+   */
   const historicalSpeed =
     Number(
       historicalSection
@@ -437,6 +769,70 @@ function historicalSpeedForSection(
   return null;
 }
 
+
+function historicalScopeDescription() {
+  return (
+    "TDX Historical Road/Traffic/Live " +
+    "City + Freeway + Highway sections; " +
+    "route portions without a matched historical observation " +
+    "remain at routing baseline."
+  );
+}
+
+
+function historicalDataSourceDescription() {
+  return (
+    "Empirical distribution of same-weekday, same-30-minute-bucket " +
+    "route ETAs reconstructed from real TDX Historical " +
+    "Road/Traffic/Live City, Freeway and Highway observations. " +
+    "Uncovered route portions remain at routing baseline. " +
+    "No normal-distribution multiplier, guessed CV, " +
+    "time-of-day multiplier, or incident penalty."
+  );
+}
+
+
+/*
+ * Product-level percentile confidence.
+ *
+ * This is a sample-size quality label,
+ * not a formal confidence interval.
+ *
+ * 8-11  -> low
+ * 12-19 -> medium
+ * 20+   -> high
+ */
+function historicalPercentileConfidence(
+  sampleCount
+) {
+  const n =
+    Math.max(
+      0,
+      Number(sampleCount) || 0
+    );
+
+  if (
+    n >= TARGET_UNIQUE_DAYS
+  ) {
+    return "high";
+  }
+
+  if (
+    n >= 12
+  ) {
+    return "medium";
+  }
+
+  if (
+    n >= MIN_UNIQUE_DAYS
+  ) {
+    return "low";
+  }
+
+  return "insufficient";
+}
+
+
 function emptyRiskResult({
   sampleCount,
   weekday,
@@ -454,17 +850,39 @@ function emptyRiskResult({
     minRequiredUniqueDays:
       MIN_UNIQUE_DAYS,
 
+    historicalTargetUniqueDays:
+      TARGET_UNIQUE_DAYS,
+
+    historicalTargetReached:
+      sampleCount >=
+      TARGET_UNIQUE_DAYS,
+
+    percentileConfidence:
+      historicalPercentileConfidence(
+        sampleCount
+      ),
+
     lookbackWeeks:
       LOOKBACK_WEEKS,
 
     weekday,
+
     timeBucket,
 
-    worst10Min: null,
-    worst5Min: null,
-    variance: null,
-    varianceLabel: null,
-    likelyRangeMin: null,
+    worst10Min:
+      null,
+
+    worst5Min:
+      null,
+
+    variance:
+      null,
+
+    varianceLabel:
+      null,
+
+    likelyRangeMin:
+      null,
 
     standardDeviationMin:
       null,
@@ -472,8 +890,11 @@ function emptyRiskResult({
     coefficientOfVariation:
       null,
 
-    stabilityScore: null,
-    stabilityLevel: null,
+    stabilityScore:
+      null,
+
+    stabilityLevel:
+      null,
 
     historicalMeanMin:
       null,
@@ -485,31 +906,44 @@ function emptyRiskResult({
       historicalAverageCoverage,
 
     sampleDates,
+
     attemptedDates,
 
     historicalScope:
-      "TDX Historical city road sections only; historical freeway/highway archive is not yet included.",
+      historicalScopeDescription(),
 
     riskDataSource:
-      "TDX Historical Road/Traffic/Live/City observations; uncovered historical road portions remain OSRM baseline; no guessed multiplier.",
+      historicalDataSourceDescription(),
   };
 }
+
 
 export async function assessHistoricalRisk({
   baseOsrmMin,
   routeDistanceKm,
 
-  routeHash = null,
-  routingEngine = "unknown",
+  /*
+   * New API.
+   */
+  matchedSections = null,
 
-  matchedCitySections,
+  /*
+   * Temporary compatibility with
+   * old server.js callers.
+   */
+  matchedCitySections = null,
+
   departureTime = null,
 }) {
   const baseMin =
-    Number(baseOsrmMin);
+    Number(
+      baseOsrmMin
+    );
 
   const distanceKm =
-    Number(routeDistanceKm);
+    Number(
+      routeDistanceKm
+    );
 
   const current =
     taipeiCurrentParts();
@@ -521,13 +955,69 @@ export async function assessHistoricalRisk({
       current.minute
     );
 
+  const sourceSections =
+    Array.isArray(
+      matchedSections
+    ) &&
+    matchedSections.length
+      ? matchedSections
+      : (
+          matchedCitySections ||
+          []
+        );
+
   const sections =
     cleanMatchedSections(
-      matchedCitySections
+      sourceSections
     );
 
+  const scopeCounts =
+    sections.reduce(
+      (
+        acc,
+        section
+      ) => {
+        acc[
+          section.scope
+        ] =
+          (
+            acc[
+              section.scope
+            ] ||
+            0
+          ) + 1;
+
+        return acc;
+      },
+
+      {
+        city: 0,
+        freeway: 0,
+        highway: 0,
+      }
+    );
+
+  console.log(
+    "[risk history sections]",
+    {
+      total:
+        sections.length,
+
+      city:
+        scopeCounts.city,
+
+      freeway:
+        scopeCounts.freeway,
+
+      highway:
+        scopeCounts.highway,
+    }
+  );
+
   if (
-    !Number.isFinite(baseMin) ||
+    !Number.isFinite(
+      baseMin
+    ) ||
     baseMin <= 0 ||
     !Number.isFinite(
       distanceKm
@@ -536,27 +1026,103 @@ export async function assessHistoricalRisk({
     !sections.length
   ) {
     return emptyRiskResult({
-      sampleCount: 0,
+      sampleCount:
+        0,
+
       weekday:
         current.weekday,
+
       timeBucket,
-      sampleDates: [],
-      attemptedDates: [],
+
+      sampleDates:
+        [],
+
+      attemptedDates:
+        [],
+
       historicalAverageCoverage:
         null,
     });
   }
 
   const grouped =
-    groupSectionsByCity(
+    groupSectionsBySource(
       sections
     );
 
   const baseSec =
-    baseMin * 60;
+    baseMin *
+    60;
 
   const baseSecPerKm =
-    baseSec / distanceKm;
+    baseSec /
+    distanceKm;
+
+  /*
+   * HISTORICAL_COVERAGE_QUALITY_GATE_V1
+   *
+   * A historical day must cover a meaningful
+   * portion of the route's normally observable
+   * TDX distance before it can count as one of
+   * the required unique sample days.
+   *
+   * This prevents a day with, for example,
+   * only 2.5% route coverage from counting
+   * equally with an 83% coverage day.
+   */
+  const routeHistoricalTargetCoverage =
+    clamp(
+      sections.reduce(
+        (sum, section) =>
+          sum +
+          Number(
+            section.matchedDistanceKm ||
+            0
+          ),
+        0
+      ) /
+        distanceKm,
+      0,
+      1
+    );
+
+  const absoluteCoverageFloor =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        Number(
+          process.env
+            .RISK_MIN_HISTORICAL_COVERAGE ||
+          0.20
+        )
+      )
+    );
+
+  const relativeCoverageFloor =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        Number(
+          process.env
+            .RISK_MIN_HISTORICAL_COVERAGE_RELATIVE ||
+          0.60
+        )
+      )
+    );
+
+  const minimumAcceptedHistoricalCoverage =
+    Math.min(
+      routeHistoricalTargetCoverage,
+      Math.max(
+        absoluteCoverageFloor,
+        routeHistoricalTargetCoverage *
+          relativeCoverageFloor
+      )
+    );
+
+  const rejectedLowCoverageDates = [];
 
   const candidateDates =
     priorSameWeekdayDates(
@@ -564,197 +1130,99 @@ export async function assessHistoricalRisk({
       LOOKBACK_WEEKS
     );
 
-  const oldestCandidateDate =
-  candidateDates.length
-    ? candidateDates[
-        candidateDates.length - 1
-      ]
-    : null;
+  const samples = [];
 
-
-// ============================================================
-// 1. FIRST: load already-persisted observations from SQLite
-// ============================================================
-
-let samples = [];
-
-if (routeHash) {
-  try {
-    const storedObservations =
-      getHistoricalObservations({
-        routeHash,
-
-        routingEngine,
-
-        modelVersion: "v1",
-
-        weekday:
-          current.weekday,
-
-        bucketStart:
-          timeBucket,
-
-        beforeDate:
-          current.dateKey,
-
-        afterDate:
-          oldestCandidateDate,
-
-        // We keep more than the minimum in the DB.
-        // 26 same-weekday observations = 26 weeks.
-        limit:
-          LOOKBACK_WEEKS,
-      });
-
-    samples =
-      storedObservations
-        .filter(
-          (row) =>
-            Number.isFinite(
-              Number(
-                row.historicalEtaSec
-              )
-            ) &&
-            Number(
-              row.historicalEtaSec
-            ) > 0
-        )
-        .map(
-          (row) => ({
-            date:
-              row.observationDate,
-
-            etaMin:
-              Number(
-                row.historicalEtaSec
-              ) / 60,
-
-            coverageRatio:
-              Number(
-                row.coverageRatio ??
-                0
-              ),
-
-            matchedDistanceKm:
-              Number(
-                row.matchedDistanceM ??
-                0
-              ) / 1000,
-
-            matchedSectionCount:
-              Number(
-                row.matchedSectionCount ??
-                0
-              ),
-          })
-        );
-
-    console.log(
-      `[risk db] loaded ${samples.length} stored sample(s) ` +
-      `for ${timeBucket}`
-    );
-  } catch (error) {
-    console.warn(
-      "[risk db] failed to load stored observations:",
-      error.message
-    );
-
-    samples = [];
-  }
-}
-
-
-const attemptedDates = [];
-
-const storedDates =
-  new Set(
-    samples.map(
-      (sample) =>
-        sample.date
-    )
-  );
+  const attemptedDates =
+    [];
 
   for (
-  const date of candidateDates
-) {
-  /*
-   * This date is already persisted for
-   * exactly this route + weekday + bucket.
-   * Do not reconstruct it from cache again.
-   */
-  if (
-    storedDates.has(date)
+    const date of
+    candidateDates
   ) {
-    continue;
-  }
+    attemptedDates.push(
+      date
+    );
 
-  /*
-   * If SQLite already satisfies the minimum,
-   * there is no reason to scan more cache files.
-   */
+    let totalDeltaSec =
+      0;
 
+    let matchedDistanceKm =
+      0;
 
-  attemptedDates.push(date);
+    let matchedSectionCount =
+      0;
 
-  let totalDeltaSec = 0;
-
-    let matchedDistanceKm = 0;
-
-    let matchedSectionCount = 0;
-
-    // If any city's Historical fetch fails (timeout/429/network), skip the
-    // entire date. A transport failure must never masquerade as low coverage.
-    let dateFetchFailed = false;
+    let dateFetchFailed =
+      false;
 
     for (
-      const [
-        city,
-        routeSections,
-      ] of grouped.entries()
+      const group of
+      grouped.values()
     ) {
       let historical;
+
+      const label =
+        group.scope ===
+          "city"
+          ? `city:${group.city}`
+          : group.scope;
 
       try {
         historical =
           await getHistoricalSectionStats(
             {
-              city,
+              scope:
+                group.scope,
+
+              city:
+                group.city,
+
               date,
+
               timeBucket,
 
               sectionIds:
-                routeSections.map(
-                  (section) =>
+                group.sections.map(
+                  (
+                    section
+                  ) =>
                     section.sectionId
                 ),
 
-              // Navigation must NEVER trigger a Historical download.
-              // Missing cache stays missing and is reported as insufficient data.
-              cacheOnly: true,
+              /*
+               * Navigation itself must
+               * never start a huge
+               * Historical download.
+               * Missing cache remains
+               * missing until backfill.
+               */
+              cacheOnly:
+                true,
             }
           );
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.log(
-          `[risk history] ${city} ${date} ${timeBucket} fetch failed:`,
+          `[risk history] ${label} ${date} ${timeBucket} failed:`,
           error.message
         );
 
-        dateFetchFailed = true;
+        dateFetchFailed =
+          true;
+
         break;
       }
-let requestedSectionCount =
-  routeSections.length;
 
-let historicalFoundCount = 0;
+      if (
+        !historical
+      ) {
+        continue;
+      }
 
-let validSpeedCount = 0;
-
-let matchedDistanceThisCityKm = 0;
-
-const missingSectionIds = [];
       for (
         const routeSection of
-        routeSections
+        group.sections
       ) {
         const historicalSection =
           historical.sections?.[
@@ -762,17 +1230,11 @@ const missingSectionIds = [];
               .sectionId
           ];
 
-       if (
-  !historicalSection
-) {
-  missingSectionIds.push(
-    routeSection.sectionId
-  );
-
-  continue;
-}
-
-historicalFoundCount += 1;
+        if (
+          !historicalSection
+        ) {
+          continue;
+        }
 
         const speed =
           historicalSpeedForSection(
@@ -788,19 +1250,28 @@ historicalFoundCount += 1;
         ) {
           continue;
         }
-        validSpeedCount += 1;
 
         const distance =
-          routeSection
-            .matchedDistanceKm;
-            matchedDistanceThisCityKm +=
-  Number(distance || 0);
+          Number(
+            routeSection
+              .matchedDistanceKm
+          );
+
+        if (
+          !Number.isFinite(
+            distance
+          ) ||
+          distance <= 0
+        ) {
+          continue;
+        }
 
         const observedSec =
           (
             distance /
             speed
-          ) * 3600;
+          ) *
+          3600;
 
         const baselineSec =
           distance *
@@ -819,9 +1290,18 @@ historicalFoundCount += 1;
           continue;
         }
 
+        /*
+         * Replace routing baseline
+         * only on the exact route
+         * distance covered by this
+         * historical section.
+         */
         totalDeltaSec +=
-          observedSec -
-          baselineSec;
+          Math.max(
+            0,
+            observedSec -
+              baselineSec
+          );
 
         matchedDistanceKm +=
           distance;
@@ -829,34 +1309,21 @@ historicalFoundCount += 1;
         matchedSectionCount +=
           1;
       }
-      console.log(
-  `[risk debug] ${city} ${date} ${timeBucket} | ` +
-  `requested=${requestedSectionCount}, ` +
-  `historicalFound=${historicalFoundCount}, ` +
-  `validSpeed=${validSpeedCount}, ` +
-  `matchedKm=${matchedDistanceThisCityKm.toFixed(3)}, ` +
-  `missing=${missingSectionIds.length}`
-);
-
-if (
-  missingSectionIds.length > 0
-) {
-  console.log(
-    `[risk debug] missing SectionIDs:`,
-    missingSectionIds.slice(0, 10)
-  );
-}
     }
 
-    if (dateFetchFailed) {
+    if (
+      dateFetchFailed
+    ) {
       console.log(
-        `[risk history] ${date} ${timeBucket}: skipped because Historical fetch failed`
+        `[risk history] ${date} ${timeBucket}: skipped because Historical lookup failed`
       );
+
       continue;
     }
 
     if (
-      matchedDistanceKm <= 0
+      matchedDistanceKm <=
+      0
     ) {
       console.log(
         `[risk history] ${date} ${timeBucket}: no matched historical route sections`
@@ -873,7 +1340,8 @@ if (
       !Number.isFinite(
         historicalRouteSec
       ) ||
-      historicalRouteSec <= 0
+      historicalRouteSec <=
+        0
     ) {
       continue;
     }
@@ -882,154 +1350,89 @@ if (
       clamp(
         matchedDistanceKm /
           distanceKm,
+
         0,
         1
       );
 
-    const sample = {
-  date,
-
-  etaMin:
-    historicalRouteSec /
-    60,
-
-  coverageRatio,
-
-  matchedDistanceKm,
-
-  matchedSectionCount,
-};
-
-samples.push(sample);
-
-
-/*
- * Persist the exact route-level historical
- * observation that was already accepted by
- * the risk engine.
- *
- * Database persistence must NOT change the
- * statistical result.
- */
-if (routeHash) {
-  try {
-    const matchedBaselineSec =
-      baseSecPerKm *
-      matchedDistanceKm;
-
-    const historicalObservedSec =
-      matchedBaselineSec +
-      totalDeltaSec;
-
-    const uncoveredBaselineSec =
-      Math.max(
-        0,
-        baseSec -
-        matchedBaselineSec
-      );
-
-    const cities =
-      [
-        ...new Set(
-          sections
-            .map(
-              (section) =>
-                section.city
-            )
-            .filter(Boolean)
-        ),
-      ]
-        .sort()
-        .join(",");
-
-    upsertHistoricalObservation({
-      routeHash,
-
-      routingEngine,
-
-      modelVersion: "v1",
-
-      city:
-        cities ||
-        "Unknown",
-
-      observationDate:
+    /*
+     * A tiny fragment of historical data is
+     * real data, but it is NOT representative
+     * enough to count as a full route sample.
+     */
+    if (
+      coverageRatio <
+      minimumAcceptedHistoricalCoverage
+    ) {
+      rejectedLowCoverageDates.push({
         date,
 
-      weekday:
-        current.weekday,
+        coverageRatio:
+          round(
+            coverageRatio,
+            4
+          ),
 
-      bucketStart:
-        timeBucket,
+        coveragePct:
+          round(
+            coverageRatio *
+              100,
+            1
+          ),
 
-      historicalEtaSec:
-        historicalRouteSec,
+        matchedDistanceKm:
+          round(
+            matchedDistanceKm,
+            3
+          ),
 
-      tdxObservedSec:
-        historicalObservedSec,
+        matchedSectionCount,
+      });
 
-      uncoveredBaselineSec,
+      console.log(
+        `[risk history] ${date} ${timeBucket}: ` +
+        `REJECTED low coverage ` +
+        `${round(coverageRatio * 100, 1)}% ` +
+        `< required ` +
+        `${round(minimumAcceptedHistoricalCoverage * 100, 1)}%`
+      );
 
-      routeDistanceM:
-        distanceKm * 1000,
+      continue;
+    }
 
-      matchedDistanceM:
-        matchedDistanceKm *
-        1000,
+    samples.push({
+      date,
+
+      etaMin:
+        historicalRouteSec /
+        60,
 
       coverageRatio,
 
+      matchedDistanceKm,
+
       matchedSectionCount,
-
-      source:
-        "TDX Historical",
     });
-    storedDates.add(date);
-
-    console.log(
-      `[risk db] saved ${date} ${timeBucket} | ` +
-      `${round(
-        historicalRouteSec / 60,
-        2
-      )} min | ` +
-      `${round(
-        coverageRatio * 100,
-        0
-      )}% coverage`
-    );
-  } catch (error) {
-    /*
-     * A database write failure must NEVER
-     * break navigation or change risk results.
-     */
-    console.warn(
-      `[risk db] failed to save ${date} ${timeBucket}:`,
-      error.message
-    );
-  }
-}
 
     console.log(
       `[risk history] ${date} ${timeBucket}: ` +
-      `${round(
-        historicalRouteSec /
-          60,
-        1
-      )} min, ` +
-      `${round(
-        coverageRatio * 100,
-        0
-      )}% route historical coverage`
+        `${round(
+          historicalRouteSec /
+            60,
+          1
+        )} min, ` +
+        `${round(
+          coverageRatio *
+            100,
+          0
+        )}% route historical coverage, ` +
+        `${matchedSectionCount} section(s)`
     );
 
-    // Stop after enough genuinely
-    // different historical days.
-    // Increase RISK_MIN_UNIQUE_DAYS
-    // if a larger empirical sample
-    // is desired.
     if (
       samples.length >=
-      LOOKBACK_WEEKS    ) {
+      TARGET_UNIQUE_DAYS
+    ) {
       break;
     }
   }
@@ -1037,9 +1440,14 @@ if (routeHash) {
   const averageCoverage =
     samples.length
       ? samples.reduce(
-          (sum, sample) =>
+          (
+            sum,
+            sample
+          ) =>
             sum +
-            sample.coverageRatio,
+            sample
+              .coverageRatio,
+
           0
         ) /
         samples.length
@@ -1047,8 +1455,55 @@ if (routeHash) {
 
   const sampleDates =
     samples.map(
-      (sample) =>
+      (
+        sample
+      ) =>
         sample.date
+    );
+
+  /*
+   * HISTORICAL_SAMPLE_AUDIT_V1
+   *
+   * Preserve the actual per-day values used
+   * to build P90 / P95 / mean / SD.
+   *
+   * Diagnostic only:
+   * this does NOT change ETA calculation.
+   */
+  const sampleDetails =
+    samples.map(
+      (sample) => ({
+        date:
+          sample.date,
+
+        etaMin:
+          round(
+            sample.etaMin,
+            3
+          ),
+
+        coverageRatio:
+          round(
+            sample.coverageRatio,
+            4
+          ),
+
+        coveragePct:
+          round(
+            sample.coverageRatio *
+              100,
+            1
+          ),
+
+        matchedDistanceKm:
+          round(
+            sample.matchedDistanceKm,
+            3
+          ),
+
+        matchedSectionCount:
+          sample.matchedSectionCount,
+      })
     );
 
   if (
@@ -1082,27 +1537,12 @@ if (routeHash) {
   const stats =
     empiricalStats(
       samples.map(
-        (sample) =>
+        (
+          sample
+        ) =>
           sample.etaMin
       )
     );
-    console.log(
-  "[risk stats]",
-  JSON.stringify(
-    {
-      sampleCount:
-        samples.length,
-
-      values:
-        samples.map(
-          (sample) =>
-            sample.etaMin
-        ),
-
-      stats,
-    }
-  )
-);
 
   if (!stats) {
     return emptyRiskResult({
@@ -1130,13 +1570,26 @@ if (routeHash) {
   }
 
   return {
-    riskStatus: "ready",
+    riskStatus:
+      "ready",
 
     sampleCount:
       samples.length,
 
     minRequiredUniqueDays:
       MIN_UNIQUE_DAYS,
+
+    historicalTargetUniqueDays:
+      TARGET_UNIQUE_DAYS,
+
+    historicalTargetReached:
+      samples.length >=
+      TARGET_UNIQUE_DAYS,
+
+    percentileConfidence:
+      historicalPercentileConfidence(
+        samples.length
+      ),
 
     lookbackWeeks:
       LOOKBACK_WEEKS,
@@ -1155,7 +1608,8 @@ if (routeHash) {
     variance:
       stats.variance,
 
-    varianceLabel: null,
+    varianceLabel:
+      null,
 
     likelyRangeMin: {
       low:
@@ -1166,13 +1620,18 @@ if (routeHash) {
     },
 
     standardDeviationMin:
-      stats.standardDeviationMin,
+      stats
+        .standardDeviationMin,
 
     coefficientOfVariation:
-      stats.coefficientOfVariation,
+      stats
+        .coefficientOfVariation,
 
-    stabilityScore: null,
-    stabilityLevel: null,
+    stabilityScore:
+      null,
+
+    stabilityLevel:
+      null,
 
     historicalMeanMin:
       stats.meanMin,
@@ -1186,19 +1645,62 @@ if (routeHash) {
         3
       ),
 
+
+    historicalCoveragePct:
+      round(
+        averageCoverage *
+          100,
+        1
+      ),
+
+    historicalCoverageState:
+      averageCoverage >= 0.999
+        ? "full"
+        : "partial",
+
+    routeHistoricalTargetCoverageRatio:
+      round(
+        routeHistoricalTargetCoverage,
+        4
+      ),
+
+    routeHistoricalTargetCoveragePct:
+      round(
+        routeHistoricalTargetCoverage *
+          100,
+        1
+      ),
+
+    minimumAcceptedHistoricalCoverageRatio:
+      round(
+        minimumAcceptedHistoricalCoverage,
+        4
+      ),
+
+    minimumAcceptedHistoricalCoveragePct:
+      round(
+        minimumAcceptedHistoricalCoverage *
+          100,
+        1
+      ),
+
+    rejectedLowCoverageDates,
+
     sampleDates,
+
+    sampleDetails,
+
     attemptedDates,
 
     historicalScope:
-      "TDX Historical city road sections only; uncovered road stays at OSRM baseline. Historical freeway/highway archive is not yet included.",
+      historicalScopeDescription(),
 
     riskDataSource:
-      "Empirical distribution of same-weekday, same-30-minute-bucket route ETAs reconstructed from TDX Historical Road/Traffic/Live/City observations. No normal-distribution multiplier, guessed CV, or incident penalty.",
+      historicalDataSourceDescription(),
   };
 }
 
+
 // Temporary compatibility alias.
-// New code should call
-// assessHistoricalRisk().
 export const assessAndRecordRisk =
   assessHistoricalRisk;

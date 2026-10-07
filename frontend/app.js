@@ -5,6 +5,10 @@ const BACKEND_BASE_URL =
     ? window.location.origin
     : "http://localhost:3000";
 
+// SCOOTER_FRONTEND_V1
+const SCOOTER_BACKEND_BASE_URL =
+  "http://localhost:3001";
+
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/dark";
 
 const map = new maplibregl.Map({
@@ -44,8 +48,14 @@ let waypointMarkers = [];
 let latestRoutes = [];
 let selectedRouteIndex = 0;
 let routePreference = "fastest";
+let transportMode = "car";
 let myLocation = null;
 let waypointCounter = 0;
+
+let historyPollTimer = null;
+let historyPollGeneration = 0;
+const HISTORY_POLL_INTERVAL_MS = 5000;
+const HISTORY_POLL_MAX_MS = 60 * 60 * 1000;
 
 const modeText = {
   walk: "步行",
@@ -66,6 +76,8 @@ const els = {
   backendStatusText: document.getElementById("backendStatusText"),
   fastestModeBtn: document.getElementById("fastestModeBtn"),
   reliableModeBtn: document.getElementById("reliableModeBtn"),
+  carTransportBtn: document.getElementById("carTransportBtn"),
+  scooterTransportBtn: document.getElementById("scooterTransportBtn"),
   mapStatus: document.getElementById("mapStatus"),
   mapStatusText: document.getElementById("mapStatusText"),
   floatingSummary: document.getElementById("floatingSummary"),
@@ -77,6 +89,116 @@ const els = {
   drawerTitle: document.getElementById("drawerTitle"),
   drawerContent: document.getElementById("drawerContent"),
 };
+
+function isScooterRoute(route) {
+  return (
+    route?.transportMode ===
+    "scooter"
+  );
+}
+
+function syncTransportButtons() {
+  const scooter =
+    transportMode ===
+    "scooter";
+
+  els.carTransportBtn
+    ?.classList.toggle(
+      "active",
+      !scooter
+    );
+
+  els.scooterTransportBtn
+    ?.classList.toggle(
+      "active",
+      scooter
+    );
+
+  els.carTransportBtn
+    ?.setAttribute(
+      "aria-pressed",
+      String(!scooter)
+    );
+
+  els.scooterTransportBtn
+    ?.setAttribute(
+      "aria-pressed",
+      String(scooter)
+    );
+}
+
+function setTransportMode(nextMode) {
+  const normalized =
+    nextMode === "scooter"
+      ? "scooter"
+      : "car";
+
+  if (
+    transportMode ===
+    normalized
+  ) {
+    return;
+  }
+
+  stopHistoryPolling();
+
+  transportMode =
+    normalized;
+
+  routePreference =
+    "fastest";
+
+  latestRoutes = [];
+  selectedRouteIndex = 0;
+
+  removeRouteLayers();
+
+  els.routeList.innerHTML =
+    "";
+
+  els.recommendationBox.innerHTML =
+    "";
+
+  els.floatingSummary.hidden =
+    true;
+
+  syncTransportButtons();
+  updateModeAvailability();
+
+  setStatus(
+    normalized === "scooter"
+      ? "機車模式：使用獨立 Scooter V1 路由。"
+      : "汽車模式：使用原本汽車 ETA 系統。",
+    ""
+  );
+}
+
+function congestionColor(
+  severity
+) {
+  const value =
+    String(
+      severity || ""
+    ).toLowerCase();
+
+  if (
+    value === "severe" ||
+    value === "heavy" ||
+    value === "jam"
+  ) {
+    return "#dc2626";
+  }
+
+  if (
+    value === "medium" ||
+    value === "moderate" ||
+    value === "slow"
+  ) {
+    return "#f97316";
+  }
+
+  return "#f59e0b";
+}
 
 function fmt(value, digits = 1, fallback = "—") {
   const n = Number(value);
@@ -161,6 +283,372 @@ function riskSamples(route) {
 
 function minRiskSamples(route) {
   return Number(route?.riskMinRequiredUniqueDays || 8);
+}
+
+function historyCanPoll(route) {
+  return Boolean(
+    route?.historyRouteHash &&
+    route?.historyTimeBucket
+  );
+}
+
+function historyPreparing(route) {
+  return (
+    historyCanPoll(route) &&
+    !riskReady(route)
+  );
+}
+
+function stopHistoryPolling() {
+  historyPollGeneration += 1;
+
+  if (historyPollTimer) {
+    clearTimeout(historyPollTimer);
+    historyPollTimer = null;
+  }
+}
+
+function applyHistoricalRisk(route, risk) {
+  if (!route || !risk) return false;
+
+  const before =
+    JSON.stringify({
+      riskStatus: route.riskStatus,
+      riskSampleCount: route.riskSampleCount,
+      worst10Min: route.worst10Min,
+      worst5Min: route.worst5Min,
+      variance: route.variance,
+      standardDeviationMin: route.standardDeviationMin,
+      historicalAverageTdxCoverageRatio:
+        route.historicalAverageTdxCoverageRatio,
+    });
+
+  route.riskStatus =
+    risk.riskStatus;
+
+  route.riskSampleCount =
+    Number(risk.sampleCount || 0);
+
+  route.riskMinRequiredUniqueDays =
+    Number(
+      risk.minRequiredUniqueDays ||
+      route.riskMinRequiredUniqueDays ||
+      8
+    );
+
+  route.riskDataSource =
+    risk.riskDataSource ??
+    route.riskDataSource;
+
+  route.worst10Min =
+    risk.worst10Min ??
+    null;
+
+  route.worst5Min =
+    risk.worst5Min ??
+    null;
+
+  route.variance =
+    risk.variance ??
+    null;
+
+  route.standardDeviationMin =
+    risk.standardDeviationMin ??
+    null;
+
+  route.coefficientOfVariation =
+    risk.coefficientOfVariation ??
+    null;
+
+  route.historicalMeanMin =
+    risk.historicalMeanMin ??
+    null;
+
+  route.historicalMedianMin =
+    risk.historicalMedianMin ??
+    null;
+
+  route.historicalAverageTdxCoverageRatio =
+    risk.historicalAverageTdxCoverageRatio ??
+    null;
+
+  route.historyPending =
+    risk.riskStatus !==
+    "ready";
+
+  const after =
+    JSON.stringify({
+      riskStatus: route.riskStatus,
+      riskSampleCount: route.riskSampleCount,
+      worst10Min: route.worst10Min,
+      worst5Min: route.worst5Min,
+      variance: route.variance,
+      standardDeviationMin: route.standardDeviationMin,
+      historicalAverageTdxCoverageRatio:
+        route.historicalAverageTdxCoverageRatio,
+    });
+
+  return before !== after;
+}
+
+function refreshHistoricalUi() {
+  updateModeAvailability();
+  renderRouteCards();
+  renderRecommendation();
+
+  updateFloatingSummary(
+    latestRoutes[
+      selectedRouteIndex
+    ]
+  );
+
+  if (
+    els.drawer &&
+    !els.drawer.hidden &&
+    latestRoutes[
+      selectedRouteIndex
+    ]
+  ) {
+    openDetails(
+      selectedRouteIndex
+    );
+  }
+}
+
+async function pollHistoricalRisk(
+  generation,
+  startedAt
+) {
+  if (
+    generation !==
+    historyPollGeneration
+  ) {
+    return;
+  }
+
+  const pendingRoutes =
+    latestRoutes
+      .filter(
+        (route) =>
+          historyPreparing(route)
+      );
+
+  if (!pendingRoutes.length) {
+    historyPollTimer = null;
+    return;
+  }
+
+  try {
+    const payload =
+      await fetchJson(
+        `${BACKEND_BASE_URL}/api/history-status`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body:
+            JSON.stringify({
+              /*
+               * HISTORICAL_ACTIVE_ROUTE_PRIORITY_V1
+               *
+               * Selected route is the active navigation route.
+               * If it has fewer than 8 usable Historical days,
+               * backend/worker must prioritize it.
+               */
+              activeRoute:
+                latestRoutes[selectedRouteIndex] &&
+                historyPreparing(
+                  latestRoutes[selectedRouteIndex]
+                )
+                  ? {
+                      routeHash:
+                        latestRoutes[selectedRouteIndex]
+                          .historyRouteHash,
+
+                      timeBucket:
+                        latestRoutes[selectedRouteIndex]
+                          .historyTimeBucket,
+                    }
+                  : null,
+
+              routes:
+                pendingRoutes.map(
+                  (route) => ({
+                    routeId:
+                      route.routeId,
+
+                    routeHash:
+                      route.historyRouteHash,
+
+                    timeBucket:
+                      route.historyTimeBucket,
+                  })
+                ),
+            }),
+        }
+      );
+
+    if (
+      generation !==
+      historyPollGeneration
+    ) {
+      return;
+    }
+
+    /*
+     * HISTORY_POLL_DEBUG_V1
+     */
+    console.log(
+      "[history poll] request routes",
+      pendingRoutes.map((route) => ({
+        routeId: route.routeId,
+        routeHash: route.historyRouteHash,
+        timeBucket: route.historyTimeBucket,
+        currentSamples: route.riskSampleCount,
+        currentStatus: route.riskStatus,
+      }))
+    );
+
+    console.log(
+      "[history poll] response",
+      payload?.results || []
+    );
+
+    let changed = false;
+
+    for (
+      const result of
+      payload?.results || []
+    ) {
+      if (!result?.risk) continue;
+
+      const route =
+        latestRoutes.find(
+          (item) =>
+            String(item.routeId) ===
+            String(result.routeId)
+        );
+
+      if (!route) {
+        console.warn(
+          "[history poll] ROUTE ID NOT FOUND",
+          result.routeId,
+          latestRoutes.map((item) => item.routeId)
+        );
+
+        continue;
+      }
+
+      const routeChanged =
+        applyHistoricalRisk(
+          route,
+          result.risk
+        );
+
+      console.log(
+        "[history poll] applied",
+        {
+          routeId: route.routeId,
+          samples: route.riskSampleCount,
+          status: route.riskStatus,
+          p90: route.worst10Min,
+          changed: routeChanged,
+        }
+      );
+
+      changed =
+        routeChanged ||
+        changed;
+    }
+
+    if (changed) {
+      refreshHistoricalUi();
+    }
+
+    const stillPending =
+      latestRoutes.some(
+        (route) =>
+          historyPreparing(route)
+      );
+
+    if (!stillPending) {
+      setStatus(
+        `已找到 ${latestRoutes.length} 條候選路線；可靠度資料已更新。`,
+        "success"
+      );
+
+      historyPollTimer = null;
+      return;
+    }
+
+    const elapsed =
+      Date.now() -
+      startedAt;
+
+    if (
+      elapsed >=
+      HISTORY_POLL_MAX_MS
+    ) {
+      console.warn(
+        "Historical polling stopped after timeout."
+      );
+
+      historyPollTimer = null;
+      return;
+    }
+
+  } catch (error) {
+    console.warn(
+      "Historical status polling failed:",
+      error.message
+    );
+  }
+
+  if (
+    generation ===
+    historyPollGeneration
+  ) {
+    historyPollTimer =
+      setTimeout(
+        () =>
+          pollHistoricalRisk(
+            generation,
+            startedAt
+          ),
+        HISTORY_POLL_INTERVAL_MS
+      );
+  }
+}
+
+function startHistoryPolling() {
+  stopHistoryPolling();
+
+  if (
+    !latestRoutes.some(
+      (route) =>
+        historyPreparing(route)
+    )
+  ) {
+    return;
+  }
+
+  const generation =
+    historyPollGeneration;
+
+  const startedAt =
+    Date.now();
+
+  historyPollTimer =
+    setTimeout(
+      () =>
+        pollHistoricalRisk(
+          generation,
+          startedAt
+        ),
+      0
+    );
 }
 
 function fastestIndex() {
@@ -295,8 +783,41 @@ async function geocode(address) {
     };
   }
 
+  const geocodeParams =
+    new URLSearchParams({
+      q: address,
+    });
+
+  /*
+   * LOCAL_SEARCH_BIAS_V1
+   *
+   * If the user already shared their current location,
+   * use it only as a search bias.
+   *
+   * Example:
+   *   長江路一段220號
+   *
+   * can prefer the nearby road/address instead of
+   * an identically named road elsewhere in Taiwan.
+   */
+  if (
+    myLocation &&
+    Number.isFinite(Number(myLocation.lat)) &&
+    Number.isFinite(Number(myLocation.lon))
+  ) {
+    geocodeParams.set(
+      "nearLat",
+      String(myLocation.lat)
+    );
+
+    geocodeParams.set(
+      "nearLon",
+      String(myLocation.lon)
+    );
+  }
+
   const payload = await fetchJson(
-    `${BACKEND_BASE_URL}/api/smart-geocode?q=${encodeURIComponent(address)}`
+    `${BACKEND_BASE_URL}/api/smart-geocode?${geocodeParams.toString()}`
   );
 
   const result = extractGeocodeResult(payload);
@@ -488,6 +1009,42 @@ function removeRouteLayers() {
     const casingId = `route-casing-${i}`;
     const sourceId = `route-source-${i}`;
 
+    /*
+     * Scooter / traffic overlay layers are separate from
+     * the base route. No traffic evidence = no overlay.
+     */
+    for (
+      let j = 0;
+      j < 100;
+      j += 1
+    ) {
+      const trafficLayerId =
+        `route-traffic-${i}-${j}`;
+
+      const trafficSourceId =
+        `route-traffic-source-${i}-${j}`;
+
+      if (
+        map.getLayer(
+          trafficLayerId
+        )
+      ) {
+        map.removeLayer(
+          trafficLayerId
+        );
+      }
+
+      if (
+        map.getSource(
+          trafficSourceId
+        )
+      ) {
+        map.removeSource(
+          trafficSourceId
+        );
+      }
+    }
+
     if (map.getLayer(layerId)) {
       map.removeLayer(layerId);
     }
@@ -619,6 +1176,105 @@ async function drawRoutes(routes) {
       paint:
         linePaintForIndex(index),
     });
+
+    /*
+     * Traffic overlay:
+     * Only draws segments supplied by the backend.
+     * We never infer congestion from missing data.
+     */
+    const congestionSegments =
+      Array.isArray(
+        route?.congestionSegments
+      )
+        ? route.congestionSegments
+        : [];
+
+    congestionSegments
+      .forEach(
+        (
+          segment,
+          trafficIndex
+        ) => {
+          const geometry =
+            segment?.geometry;
+
+          if (
+            geometry?.type !==
+              "LineString" ||
+            !Array.isArray(
+              geometry.coordinates
+            ) ||
+            geometry.coordinates.length <
+              2
+          ) {
+            return;
+          }
+
+          const trafficSourceId =
+            `route-traffic-source-${index}-${trafficIndex}`;
+
+          const trafficLayerId =
+            `route-traffic-${index}-${trafficIndex}`;
+
+          map.addSource(
+            trafficSourceId,
+            {
+              type: "geojson",
+
+              data: {
+                type:
+                  "Feature",
+
+                properties: {
+                  severity:
+                    segment?.severity ||
+                    "slow",
+                },
+
+                geometry,
+              },
+            }
+          );
+
+          map.addLayer({
+            id:
+              trafficLayerId,
+
+            type:
+              "line",
+
+            source:
+              trafficSourceId,
+
+            layout: {
+              "line-cap":
+                "round",
+
+              "line-join":
+                "round",
+            },
+
+            paint: {
+              "line-color":
+                congestionColor(
+                  segment?.severity
+                ),
+
+              "line-width":
+                index ===
+                selectedRouteIndex
+                  ? 7
+                  : 5,
+
+              "line-opacity":
+                index ===
+                selectedRouteIndex
+                  ? 0.95
+                  : 0.58,
+            },
+          });
+        }
+      );
 
     map.on(
       "click",
@@ -813,6 +1469,34 @@ function differenceFromFastest(route) {
 }
 
 function routeStateChips(route) {
+  if (
+    isScooterRoute(route)
+  ) {
+    const hasTraffic =
+      Array.isArray(
+        route?.congestionSegments
+      ) &&
+      route.congestionSegments
+        .length > 0;
+
+    return `
+      <span class="state-chip good">
+        Scooter route
+      </span>
+      <span class="state-chip ${
+        hasTraffic
+          ? "good"
+          : "warn"
+      }">
+        ${
+          hasTraffic
+            ? "Live congestion"
+            : "Live traffic pending"
+        }
+      </span>
+    `;
+  }
+
   const coverage =
     Number(
       route
@@ -834,6 +1518,8 @@ function routeStateChips(route) {
   const historyText =
     riskReady(route)
       ? "Historical ready"
+      : historyPreparing(route)
+      ? `Preparing ${riskSamples(route)}/${minRiskSamples(route)}`
       : `History ${riskSamples(route)}/${minRiskSamples(route)}`;
 
   return `
@@ -858,6 +1544,73 @@ function renderRecommendation() {
       selectedRouteIndex
     ];
 
+  if (
+    isScooterRoute(route)
+  ) {
+    els.recommendationBox.innerHTML = `
+      <div class="recommend-card">
+        <div class="recommend-top">
+          <div>
+            <div class="recommend-kicker">
+              SCOOTER ROUTE
+            </div>
+            <div class="recommend-title">
+              ${esc(route.label)}
+            </div>
+          </div>
+
+          <span class="recommend-label">
+            SCOOTER V1
+          </span>
+        </div>
+
+        <div class="recommend-main">
+          <div class="recommend-eta">
+            <strong>
+              ${fmt(route.expectedMin)} min
+            </strong>
+            <span>
+              Current ETA
+            </span>
+          </div>
+
+          <div class="recommend-side">
+            <span>Distance</span>
+            <strong>
+              ${fmt(route.distanceKm, 2)} km
+            </strong>
+          </div>
+        </div>
+
+        <div class="recommend-subrow">
+          <div class="recommend-subcell">
+            <span>Routing model</span>
+            <strong>
+              Valhalla motor_scooter
+            </strong>
+          </div>
+
+          <div class="recommend-subcell">
+            <span>Traffic model</span>
+            <strong>
+              ${
+                Array.isArray(
+                  route?.congestionSegments
+                ) &&
+                route.congestionSegments
+                  .length > 0
+                  ? "Live overlay"
+                  : "Not applied yet"
+              }
+            </strong>
+          </div>
+        </div>
+      </div>
+    `;
+
+    return;
+  }
+
   const ready =
     riskReady(route);
 
@@ -876,11 +1629,15 @@ function renderRecommendation() {
   const secondLabel =
     ready
       ? "Reliable ETA"
+      : historyPreparing(route)
+      ? "Reliability"
       : "History";
 
   const secondValue =
     ready
       ? `${fmt(p90)} min`
+      : historyPreparing(route)
+      ? `Preparing ${riskSamples(route)}/${minRiskSamples(route)}`
       : `${riskSamples(route)}/${minRiskSamples(route)} days`;
 
   const deltaValue =
@@ -934,6 +1691,9 @@ function renderRouteCards() {
   els.routeList.innerHTML =
     latestRoutes
       .map((route, index) => {
+        const scooter =
+          isScooterRoute(route);
+
         const badge =
           routeBadge(route, index);
 
@@ -944,7 +1704,14 @@ function renderRouteCards() {
           differenceFromFastest(route);
 
         const insightA =
-          p90 !== null
+          scooter
+            ? `
+              <div class="insight">
+                <span>Model</span>
+                <strong>Motor scooter</strong>
+              </div>
+            `
+            : p90 !== null
             ? `
               <div class="insight">
                 <span>Reliable ETA</span>
@@ -953,8 +1720,12 @@ function renderRouteCards() {
             `
             : `
               <div class="insight">
-                <span>History</span>
-                <strong>${riskSamples(route)}/${minRiskSamples(route)} days</strong>
+                <span>${historyPreparing(route) ? "Reliability" : "History"}</span>
+                <strong>${
+                  historyPreparing(route)
+                    ? `Preparing ${riskSamples(route)}/${minRiskSamples(route)}`
+                    : `${riskSamples(route)}/${minRiskSamples(route)} days`
+                }</strong>
               </div>
             `;
 
@@ -972,8 +1743,12 @@ function renderRouteCards() {
           `;
 
         const note =
-          riskReady(route)
+          scooter
+            ? "Scooter V1 is isolated from car history and car calibration."
+            : riskReady(route)
             ? "Reliable ETA uses empirical historical P90."
+            : historyPreparing(route)
+            ? "Historical reliability is updating automatically in the background."
             : "Reliability waits for enough empirical history.";
 
         return `
@@ -1113,6 +1888,29 @@ function updateFloatingSummary(route) {
 }
 
 function updateModeAvailability() {
+  if (
+    transportMode ===
+    "scooter"
+  ) {
+    routePreference =
+      "fastest";
+
+    els.fastestModeBtn
+      .classList.add(
+        "active"
+      );
+
+    els.reliableModeBtn
+      .classList.remove(
+        "active"
+      );
+
+    els.reliableModeBtn.disabled =
+      true;
+
+    return;
+  }
+
   const reliable =
     reliableIndex();
 
@@ -1440,6 +2238,8 @@ function closeDetails() {
 }
 
 async function calculateRoute() {
+  stopHistoryPolling();
+
   try {
     const startText =
       els.startInput.value.trim();
@@ -1490,9 +2290,19 @@ async function calculateRoute() {
           endPoint.lat,
       });
 
+    const routeBaseUrl =
+      transportMode === "scooter"
+        ? SCOOTER_BACKEND_BASE_URL
+        : BACKEND_BASE_URL;
+
+    const routePath =
+      transportMode === "scooter"
+        ? "/api/scooter-route"
+        : "/api/route";
+
     const data =
       await fetchJson(
-        `${BACKEND_BASE_URL}/api/route?${params.toString()}`
+        `${routeBaseUrl}${routePath}?${params.toString()}`
       );
 
     if (
@@ -1527,10 +2337,32 @@ async function calculateRoute() {
       { fit: false }
     );
 
+    if (
+      transportMode ===
+      "scooter"
+    ) {
+      setStatus(
+        `已找到 ${latestRoutes.length} 條機車候選路線；目前為 Scooter V1 baseline，尚未套用 live traffic / scooter calibration。`,
+        "success"
+      );
+
+      return;
+    }
+
+    const preparingHistory =
+      latestRoutes.some(
+        (route) =>
+          historyPreparing(route)
+      );
+
     setStatus(
-      `已找到 ${latestRoutes.length} 條候選路線。`,
+      preparingHistory
+        ? `已找到 ${latestRoutes.length} 條候選路線；可靠度資料背景準備中…`
+        : `已找到 ${latestRoutes.length} 條候選路線。`,
       "success"
     );
+
+    startHistoryPolling();
   } catch (error) {
     console.error(error);
 
@@ -1662,6 +2494,8 @@ async function calculateMultiModalRoute() {
 }
 
 function clearRoutes() {
+  stopHistoryPolling();
+
   removeAllMapContent();
 
   latestRoutes = [];
@@ -1754,6 +2588,26 @@ els.reliableModeBtn
       chooseByPreference();
     }
   );
+
+els.carTransportBtn
+  ?.addEventListener(
+    "click",
+    () =>
+      setTransportMode(
+        "car"
+      )
+  );
+
+els.scooterTransportBtn
+  ?.addEventListener(
+    "click",
+    () =>
+      setTransportMode(
+        "scooter"
+      )
+  );
+
+syncTransportButtons();
 
 document
   .getElementById(
@@ -1914,3 +2768,755 @@ window.useMyLocation =
 renderEmptyState();
 updateModeAvailability();
 checkBackend();
+
+// ============================================================
+// RISK_NAV_AUTOCOMPLETE_V1
+// Google-Maps-like typeahead suggestions.
+// ============================================================
+
+(function installRiskNavAutocomplete() {
+
+  function boot() {
+    const inputs =
+      [
+        document.getElementById(
+          "startInput"
+        ),
+
+        document.getElementById(
+          "endInput"
+        ),
+      ]
+        .filter(Boolean);
+
+
+    if (!inputs.length) {
+      console.warn(
+        "RiskNav autocomplete: inputs not found"
+      );
+
+      return;
+    }
+
+
+    if (
+      !document.getElementById(
+        "risknavAutocompleteStyle"
+      )
+    ) {
+      const style =
+        document.createElement(
+          "style"
+        );
+
+      style.id =
+        "risknavAutocompleteStyle";
+
+      style.textContent = `
+        .risknav-autocomplete {
+          position: fixed;
+          z-index: 999999;
+
+          overflow-y: auto;
+
+          background:
+            rgba(9, 17, 29, 0.98);
+
+          border:
+            1px solid
+            rgba(148, 163, 184, 0.22);
+
+          border-radius: 14px;
+
+          box-shadow:
+            0 20px 55px
+            rgba(0, 0, 0, 0.5);
+
+          backdrop-filter:
+            blur(18px);
+        }
+
+        .risknav-autocomplete[hidden] {
+          display: none !important;
+        }
+
+        .risknav-suggestion {
+          width: 100%;
+
+          display: flex;
+          align-items: center;
+          gap: 11px;
+
+          padding: 11px 12px;
+
+          border: 0;
+          border-bottom:
+            1px solid
+            rgba(148, 163, 184, 0.1);
+
+          background:
+            transparent;
+
+          color:
+            #f8fafc;
+
+          text-align:
+            left;
+
+          cursor:
+            pointer;
+        }
+
+        .risknav-suggestion:last-child {
+          border-bottom: 0;
+        }
+
+        .risknav-suggestion:hover,
+        .risknav-suggestion.active {
+          background:
+            rgba(59, 130, 246, 0.18);
+        }
+
+        .risknav-suggestion-icon {
+          width: 30px;
+          height: 30px;
+
+          flex: 0 0 auto;
+
+          display: grid;
+          place-items: center;
+
+          border-radius: 9px;
+
+          background:
+            rgba(148, 163, 184, 0.1);
+        }
+
+        .risknav-suggestion-copy {
+          min-width: 0;
+          flex: 1;
+        }
+
+        .risknav-suggestion-name {
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+
+          font-size: 13px;
+          font-weight: 650;
+        }
+
+        .risknav-suggestion-meta {
+          margin-top: 3px;
+
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+
+          color:
+            #94a3b8;
+
+          font-size: 11px;
+        }
+
+        .risknav-suggestion-state {
+          padding:
+            11px 13px;
+
+          color:
+            #94a3b8;
+
+          font-size: 12px;
+        }
+      `;
+
+      document.head.appendChild(
+        style
+      );
+    }
+
+
+    function iconFor(
+      item
+    ) {
+      const text =
+        `${item?.locationType || ""} ${item?.source || ""}`
+          .toLowerCase();
+
+      if (
+        /restaurant|food/.test(
+          text
+        )
+      ) {
+        return "🍴";
+      }
+
+      if (
+        /hotel|lodging/.test(
+          text
+        )
+      ) {
+        return "🏨";
+      }
+
+      if (
+        /station|railway|metro|mrt|thsr|tra/.test(
+          text
+        )
+      ) {
+        return "🚉";
+      }
+
+      if (
+        /port|harbour|harbor/.test(
+          text
+        )
+      ) {
+        return "⚓";
+      }
+
+      return "⌖";
+    }
+
+
+    for (
+      const input
+      of inputs
+    ) {
+      input.setAttribute(
+        "autocomplete",
+        "off"
+      );
+
+
+      const menu =
+        document.createElement(
+          "div"
+        );
+
+      menu.className =
+        "risknav-autocomplete";
+
+      menu.hidden =
+        true;
+
+      document.body.appendChild(
+        menu
+      );
+
+
+      let timer =
+        null;
+
+      let controller =
+        null;
+
+      let items =
+        [];
+
+      let active =
+        -1;
+
+
+      function position() {
+        if (
+          menu.hidden
+        ) {
+          return;
+        }
+
+        const rect =
+          input.getBoundingClientRect();
+
+        menu.style.left =
+          `${Math.round(
+            rect.left
+          )}px`;
+
+        menu.style.top =
+          `${Math.round(
+            rect.bottom + 6
+          )}px`;
+
+        menu.style.width =
+          `${Math.round(
+            rect.width
+          )}px`;
+
+        menu.style.maxHeight =
+          `${Math.min(
+            360,
+            Math.max(
+              150,
+              window.innerHeight -
+              rect.bottom -
+              20
+            )
+          )}px`;
+      }
+
+
+      function close() {
+        menu.hidden =
+          true;
+
+        active =
+          -1;
+      }
+
+
+      function selectIndex(
+        index
+      ) {
+        const rows =
+          [
+            ...menu.querySelectorAll(
+              ".risknav-suggestion"
+            ),
+          ];
+
+        rows.forEach(
+          row =>
+            row.classList
+              .remove(
+                "active"
+              )
+        );
+
+        if (
+          index < 0 ||
+          index >=
+            rows.length
+        ) {
+          active =
+            -1;
+
+          return;
+        }
+
+        active =
+          index;
+
+        rows[index]
+          .classList
+          .add(
+            "active"
+          );
+      }
+
+
+      function choose(
+        item
+      ) {
+        input.value =
+          item.displayName;
+
+        /*
+         * Keep grounded coordinates on the field.
+         * Later routing code can use these directly.
+         */
+        input.dataset.placeLat =
+          String(
+            item.lat
+          );
+
+        input.dataset.placeLon =
+          String(
+            item.lon
+          );
+
+        input.dataset.placeName =
+          item.displayName;
+
+        close();
+      }
+
+
+      function render(
+        suggestions
+      ) {
+        items =
+          Array.isArray(
+            suggestions
+          )
+            ? suggestions
+            : [];
+
+        active =
+          -1;
+
+        menu.replaceChildren();
+
+
+        if (!items.length) {
+          close();
+          return;
+        }
+
+
+        items.forEach(
+          (
+            item,
+            index
+          ) => {
+            const row =
+              document.createElement(
+                "button"
+              );
+
+            row.type =
+              "button";
+
+            row.className =
+              "risknav-suggestion";
+
+
+            const icon =
+              document.createElement(
+                "span"
+              );
+
+            icon.className =
+              "risknav-suggestion-icon";
+
+            icon.textContent =
+              iconFor(
+                item
+              );
+
+
+            const copy =
+              document.createElement(
+                "span"
+              );
+
+            copy.className =
+              "risknav-suggestion-copy";
+
+
+            const name =
+              document.createElement(
+                "div"
+              );
+
+            name.className =
+              "risknav-suggestion-name";
+
+            name.textContent =
+              item.displayName;
+
+
+            const meta =
+              document.createElement(
+                "div"
+              );
+
+            meta.className =
+              "risknav-suggestion-meta";
+
+            meta.textContent =
+              [
+                item.address,
+                item.source,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+
+
+            copy.append(
+              name,
+              meta
+            );
+
+            row.append(
+              icon,
+              copy
+            );
+
+
+            row.addEventListener(
+              "mouseenter",
+              () =>
+                selectIndex(
+                  index
+                )
+            );
+
+
+            row.addEventListener(
+              "mousedown",
+              event => {
+                event.preventDefault();
+
+                choose(
+                  item
+                );
+              }
+            );
+
+
+            menu.appendChild(
+              row
+            );
+          }
+        );
+
+
+        menu.hidden =
+          false;
+
+        position();
+      }
+
+
+      async function searchNow() {
+        const query =
+          input.value.trim();
+
+
+        if (!query) {
+          close();
+          return;
+        }
+
+
+        controller?.abort();
+
+        controller =
+          new AbortController();
+
+
+        menu.replaceChildren();
+
+        const state =
+          document.createElement(
+            "div"
+          );
+
+        state.className =
+          "risknav-suggestion-state";
+
+        state.textContent =
+          "搜尋地點…";
+
+        menu.appendChild(
+          state
+        );
+
+        menu.hidden =
+          false;
+
+        position();
+
+
+        try {
+          const params =
+            new URLSearchParams({
+              q:
+                query,
+
+              limit:
+                "8",
+            });
+
+
+          const response =
+            await fetch(
+              `/api/place-suggest?${params.toString()}`,
+              {
+                signal:
+                  controller.signal,
+              }
+            );
+
+
+          if (
+            !response.ok
+          ) {
+            close();
+            return;
+          }
+
+
+          const data =
+            await response.json();
+
+
+          /*
+           * Ignore stale request result.
+           */
+          if (
+            input.value.trim() !==
+            query
+          ) {
+            return;
+          }
+
+
+          render(
+            data?.suggestions ||
+            []
+          );
+
+        } catch (error) {
+          if (
+            error.name !==
+            "AbortError"
+          ) {
+            console.warn(
+              "RiskNav autocomplete:",
+              error
+            );
+          }
+
+          close();
+        }
+      }
+
+
+      input.addEventListener(
+        "input",
+        () => {
+          /*
+           * User edited a selected place:
+           * invalidate its stored coordinates.
+           */
+          delete input.dataset.placeLat;
+          delete input.dataset.placeLon;
+          delete input.dataset.placeName;
+
+          clearTimeout(
+            timer
+          );
+
+          timer =
+            setTimeout(
+              searchNow,
+              400
+            );
+        }
+      );
+
+
+      input.addEventListener(
+        "keydown",
+        event => {
+          if (
+            menu.hidden
+          ) {
+            return;
+          }
+
+
+          if (
+            event.key ===
+            "ArrowDown"
+          ) {
+            event.preventDefault();
+
+            selectIndex(
+              Math.min(
+                items.length - 1,
+                active + 1
+              )
+            );
+
+            return;
+          }
+
+
+          if (
+            event.key ===
+            "ArrowUp"
+          ) {
+            event.preventDefault();
+
+            selectIndex(
+              active <= 0
+                ? items.length - 1
+                : active - 1
+            );
+
+            return;
+          }
+
+
+          if (
+            event.key ===
+            "Enter" &&
+            items.length
+          ) {
+            event.preventDefault();
+
+            event.stopImmediatePropagation();
+
+            choose(
+              items[
+                active >= 0
+                  ? active
+                  : 0
+              ]
+            );
+
+            return;
+          }
+
+
+          if (
+            event.key ===
+            "Escape"
+          ) {
+            event.preventDefault();
+            close();
+          }
+        }
+      );
+
+
+      input.addEventListener(
+        "blur",
+        () =>
+          setTimeout(
+            close,
+            120
+          )
+      );
+
+
+      window.addEventListener(
+        "resize",
+        position
+      );
+
+      window.addEventListener(
+        "scroll",
+        position,
+        true
+      );
+    }
+
+
+    console.log(
+      "RiskNav autocomplete installed"
+    );
+  }
+
+
+  if (
+    document.readyState ===
+    "loading"
+  ) {
+    document.addEventListener(
+      "DOMContentLoaded",
+      boot,
+      {
+        once:
+          true,
+      }
+    );
+
+  } else {
+    boot();
+  }
+
+})();

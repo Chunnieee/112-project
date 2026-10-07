@@ -232,7 +232,50 @@
           </button>
 
 
+                  <!-- SCOOTER_FRONTEND_V1 -->
+        <div
+          class="transport-switch"
+          role="group"
+          aria-label="交通工具"
+        >
           <button
+            id="carTransportBtn"
+            class="transport-button active"
+            type="button"
+            aria-pressed="true"
+          >
+            <svg
+              class="transport-icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                d="M5 16h14M6.5 16l1-5h9l1 5M8 11l1.2-3h5.6l1.2 3M7 18.2h.01M17 18.2h.01"
+              />
+            </svg>
+            <span>汽車</span>
+          </button>
+
+          <button
+            id="scooterTransportBtn"
+            class="transport-button"
+            type="button"
+            aria-pressed="false"
+          >
+            <svg
+              class="transport-icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                d="M7 17a2.5 2.5 0 1 0 0 .01M17 17a2.5 2.5 0 1 0 0 .01M9.5 17h4l2-6h-4l-1.5 3H8.5M15.5 11l1-3h2"
+              />
+            </svg>
+            <span>機車</span>
+          </button>
+        </div>
+
+<button
             id="routeBtn"
             class="primary-button"
             type="button"
@@ -599,8 +642,9 @@
   ========================== -->
   <script
     type="module"
-    src="app.js?v=203"
+    src="app.js?v=204"
   ></script>
 
+  <script src="etaTripTracker.js?v=6"></script>
 </body>
 </html>
