@@ -245,7 +245,9 @@ export async function getValhallaRoutes({
   endLat,
   alternatives = 2,
   timeoutMs = 10000,
+  costing = "auto",
 }) {
+  if (!["auto", "pedestrian", "motor_scooter"].includes(costing)) throw new Error("Unsupported routing mode");
   const controller =
     new AbortController();
 
@@ -289,7 +291,7 @@ export async function getValhallaRoutes({
                 },
               ],
 
-              costing: "auto",
+              costing,
 
               // 2 = primary + up to 2 alternatives
               alternates:

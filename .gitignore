@@ -1,5 +1,11 @@
 # node
 node_modules/
+services/valhalla/.venv/
+services/valhalla/data/
+services/valhalla/logs/
+services/valhalla/__pycache__/
+backend/nightSafety/pedestrianSafety/data/osmRoadCache/
+backend/nightSafety/database/*.db*
 backend/node_modules/
 frontend/node_modules/
 
