@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pedestrian Safety Lab — 行人安全資料測試台</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="bestDeparture.css" />
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <h1>行人安全資料測試台</h1>
+    <div id="healthLine">連線中...</div>
+  </header>
+
+  <main id="layout">
+
+    <section id="mapPane">
+      <div id="map"></div>
+      <div id="mapHint"></div>
+    </section>
+
+    <aside id="sidePane">
+
+      <div class="tabBar">
+        <button type="button" class="tabBtn active" data-tab="route">路線安全評分</button>
+        <button type="button" class="tabBtn" data-tab="departure">最佳出發時間</button>
+        <button type="button" class="tabBtn" data-tab="point">單點查詢</button>
+        <button type="button" class="tabBtn" data-tab="summary">資料總覽</button>
+      </div>
+
+      <div class="tabPanel active" id="tab-route">
+        <p class="hint">直接<b>打字</b>輸入地名、地址或 lat,lon,或按 🎤 <b>用說的</b>。也可以按最上面的大麥克風,一句話說「從台北車站到台北101」或「從這裡經過西門町到龍山寺」。按 📍 用目前位置當起點,按「＋ 新增中途點」可以指定要順路經過的地方。(點地圖仍然可以用,當作備用。)</p>
+
+        <div class="modeBar" id="modeBar" role="tablist" aria-label="交通方式">
+          <button type="button" class="modeBtn active" data-mode="walk">🚶 步行</button>
+          <button type="button" class="modeBtn" data-mode="scooter">🛵 機車</button>
+          <button type="button" class="modeBtn" data-mode="car">🚗 開車</button>
+          <button type="button" class="modeBtn" data-mode="transit">🚇 大眾運輸</button>
+        </div>
+        <div class="modeNote" id="modeNote"></div>
+
+        <button type="button" id="voiceBothBtn" class="voiceBigBtn">🎤 一句話說出起點和終點</button>
+        <div id="voiceBothStatus" class="voiceStatus"></div>
+
+        <div class="formRow placeField" data-field="start">
+          <label>起點</label>
+          <div class="placeInputRow">
+            <input type="text" id="startCoord" placeholder="例如:台北車站、政治大學、25.0478,121.5170" autocomplete="off" />
+            <button type="button" class="iconBtn locateBtn" id="locateBtn" title="用我目前的位置當起點">📍</button>
+            <button type="button" class="iconBtn searchBtn" title="搜尋">🔍</button>
+            <button type="button" class="iconBtn micBtn" title="語音輸入">🎤</button>
+          </div>
+          <div class="placeStatus"></div>
+          <ul class="placeResults"></ul>
+        </div>
+
+        <div id="viaList"></div>
+        <button type="button" id="addViaBtn" class="addViaBtn">＋ 新增中途點</button>
+
+        <template id="viaTemplate">
+          <div class="formRow placeField viaField">
+            <label><span class="viaLabel">中途點</span> <button type="button" class="removeViaBtn" title="移除這個中途點">✕ 移除</button></label>
+            <div class="placeInputRow">
+              <input type="text" placeholder="要順路經過的地方,例如:西門町" autocomplete="off" />
+              <button type="button" class="iconBtn searchBtn" title="搜尋">🔍</button>
+              <button type="button" class="iconBtn micBtn" title="語音輸入">🎤</button>
+            </div>
+            <div class="placeStatus"></div>
+            <ul class="placeResults"></ul>
+          </div>
+        </template>
+        <div class="formRow placeField" data-field="end">
+          <label>終點</label>
+          <div class="placeInputRow">
+            <input type="text" id="endCoord" placeholder="例如:台北101、台北市信義區市府路1號" autocomplete="off" />
+            <button type="button" class="iconBtn searchBtn" title="搜尋">🔍</button>
+            <button type="button" class="iconBtn micBtn" title="語音輸入">🎤</button>
+          </div>
+          <div class="placeStatus"></div>
+          <ul class="placeResults"></ul>
+        </div>
+        <div class="formRow" id="departRow" hidden>
+          <label>出發時間(大眾運輸)</label>
+          <input type="datetime-local" id="departTime" />
+        </div>
+        <div class="formRow">
+          <label>資料來源</label>
+          <select id="dataSource">
+            <option value="real" selected>real(真實資料)</option>
+            <option value="mock">mock(假資料,僅供介面測試)</option>
+          </select>
+        </div>
+
+        <button type="button" id="runRouteBtn" class="primaryBtn">規劃路線並比較安全性</button>
+
+        <div id="routeResult"></div>
+      </div>
+
+      <!-- ==============================================
+           Best departure time
+           ============================================== -->
+
+      <div
+        class="tabPanel"
+        id="tab-departure"
+      >
+
+
+        <p class="hint">
+
+          輸入起點、終點和
+          <b>希望抵達時間</b>。
+
+          系統會比較不同出發時間的預估車程與交通壅塞，
+          找出「能準時抵達、又不用過早出門」的建議時段。
+
+        </p>
+
+
+        <div class="departureNote">
+
+          這個功能不是單純推薦「越早越好」。
+
+          系統會先排除會遲到的時間，
+          再從車程接近最短的候選中，
+          選擇較晚出發的時段。
+
+        </div>
+
+
+        <!-- Start -->
+
+        <div class="formRow">
+
+          <label>
+            起點
+          </label>
+
+
+          <div class="departurePlaceRow">
+
+
+            <input
+
+              type="text"
+
+              id="departureStart"
+
+              placeholder="例如：台北車站"
+
+              autocomplete="off"
+
+            />
+
+
+            <button
+
+              type="button"
+
+              id="departureStartSearch"
+
+              class="iconBtn"
+
+              title="搜尋"
+
+            >
+              🔍
+            </button>
+
+
+            <button
+
+              type="button"
+
+              id="departureStartMic"
+
+              class="iconBtn micBtn"
+
+              title="語音輸入"
+
+            >
+              🎤
+            </button>
+
+
+          </div>
+
+
+          <div
+
+            id="departureStartStatus"
+
+            class="departurePlaceStatus"
+
+          ></div>
+
+
+          <ul
+
+            id="departureStartResults"
+
+            class="departurePlaceResults"
+
+          ></ul>
+
+
+        </div>
+
+
+        <!-- End -->
+
+        <div class="formRow">
+
+
+          <label>
+            終點
+          </label>
+
+
+          <div class="departurePlaceRow">
+
+
+            <input
+
+              type="text"
+
+              id="departureEnd"
+
+              placeholder="例如：國立政治大學"
+
+              autocomplete="off"
+
+            />
+
+
+            <button
+
+              type="button"
+
+              id="departureEndSearch"
+
+              class="iconBtn"
+
+              title="搜尋"
+
+            >
+              🔍
+            </button>
+
+
+            <button
+
+              type="button"
+
+              id="departureEndMic"
+
+              class="iconBtn micBtn"
+
+              title="語音輸入"
+
+            >
+              🎤
+            </button>
+
+
+          </div>
+
+
+          <div
+
+            id="departureEndStatus"
+
+            class="departurePlaceStatus"
+
+          ></div>
+
+
+          <ul
+
+            id="departureEndResults"
+
+            class="departurePlaceResults"
+
+          ></ul>
+
+
+        </div>
+
+
+        <!-- Desired arrival -->
+
+        <div class="formRow">
+
+          <label for="desiredArrivalTime">
+            希望最晚抵達
+          </label>
+
+
+          <input
+
+            type="datetime-local"
+
+            id="desiredArrivalTime"
+
+          />
+
+        </div>
+
+
+        <div class="departureConfigGrid">
+
+
+          <div class="formRow">
+
+            <label for="arrivalBufferMinutes">
+              抵達緩衝
+            </label>
+
+
+            <select id="arrivalBufferMinutes">
+
+              <option value="0">
+                不預留
+              </option>
+
+              <option value="5">
+                提前 5 分鐘
+              </option>
+
+              <option
+                value="10"
+                selected
+              >
+                提前 10 分鐘
+              </option>
+
+              <option value="15">
+                提前 15 分鐘
+              </option>
+
+              <option value="20">
+                提前 20 分鐘
+              </option>
+
+            </select>
+
+          </div>
+
+
+          <div class="formRow">
+
+            <label for="departureTravelMode">
+              交通方式
+            </label>
+
+
+            <select id="departureTravelMode">
+
+              <option
+                value="car"
+                selected
+              >
+                汽車
+              </option>
+
+              <option value="motorcycle">
+                機車
+              </option>
+
+            </select>
+
+          </div>
+
+
+        </div>
+
+
+        <button
+
+          type="button"
+
+          id="runDepartureBtn"
+
+          class="primaryBtn"
+
+        >
+
+          推薦最佳出發時間
+
+        </button>
+
+
+        <div id="departureResult"></div>
+
+
+      </div>
+
+
+      <div class="tabPanel" id="tab-point">
+        <p class="hint">輸入或說出一個地點(也可以點地圖),查詢該點附近真正記錄到的事故/路燈/商店原始資料,方便你跟 Google 街景或政府開放資料逐筆核對是否正確。</p>
+
+        <div class="formRow placeField" data-field="point">
+          <label>查詢地點</label>
+          <div class="placeInputRow">
+            <input type="text" id="pointCoord" placeholder="例如:西門町、25.0340,121.5645" autocomplete="off" />
+            <button type="button" class="iconBtn searchBtn" title="搜尋">🔍</button>
+            <button type="button" class="iconBtn micBtn" title="語音輸入">🎤</button>
+          </div>
+          <div class="placeStatus"></div>
+          <ul class="placeResults"></ul>
+        </div>
+        <div class="formRow">
+          <label>半徑(公尺)</label>
+          <input type="number" id="pointRadius" value="150" min="10" max="1000" />
+        </div>
+        <div class="formRow">
+          <label>資料類型</label>
+          <select id="pointType">
+            <option value="accidents">accidents(行人事故)</option>
+            <option value="streetlights">streetlights(路燈)</option>
+            <option value="stores">stores(便利商店)</option>
+            <option value="scooterAccidents">scooterAccidents(機車事故)</option>
+            <option value="carAccidents">carAccidents(汽車事故)</option>
+          </select>
+        </div>
+
+        <button type="button" id="runPointBtn" class="primaryBtn">查詢附近原始資料</button>
+
+        <div id="pointResult"></div>
+      </div>
+
+      <div class="tabPanel" id="tab-summary">
+        <p class="hint">每次按下都會重新讀取目前 pedestrianSafety/data/*.json 的實際內容(不是寫死的數字)——改完資料、重跑 build_*.py 之後,直接按這個就能確認有沒有生效。</p>
+
+        <button type="button" id="runSummaryBtn" class="primaryBtn">重新讀取資料摘要</button>
+
+        <div id="summaryResult"></div>
+      </div>
+
+    </aside>
+
+  </main>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+<script src="bestDeparture.js"></script>
+</body>
+</html>
