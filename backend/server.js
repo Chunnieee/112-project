@@ -1,11 +1,7 @@
+import "./loadEnv.js";
 import {
   createRouteHash,
 } from "./historicalDb.js";
-import dotenv from "dotenv";
-
-dotenv.config({
-  override: true,
-});
 import express from "express";
 import { assessHistoricalRisk } from "./riskEngine.js";
 import { assessAndRecordUncoveredPriorV9 } from "./uncoveredPriorV9.js";

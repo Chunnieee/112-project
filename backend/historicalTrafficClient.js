@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./loadEnv.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1090,4 +1090,4 @@ export async function getHistoricalSectionStats({
       Object.keys(sections).length,
     sections,
   };
-}
+}

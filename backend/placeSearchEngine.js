@@ -5073,6 +5073,130 @@ async function searchNominatimFallback({
 }
 
 
+/*
+ * TOMTOM_FALLBACK_V1
+ *
+ * Grounded backup geocoder used when Photon and
+ * TDX return nothing (e.g. TDX keys missing/invalid).
+ * Requires TOMTOM_API_KEY in .env; skipped silently otherwise.
+ */
+const TOMTOM_SEARCH_URL =
+  "https://api.tomtom.com/search/2/search/";
+
+async function searchTomTomFallback({
+  queries,
+  nearLat = null,
+  nearLon = null,
+}) {
+  const apiKey =
+    String(process.env.TOMTOM_API_KEY || "").trim();
+
+  if (!apiKey) {
+    return { candidates: [], errors: [], configured: false };
+  }
+
+  const attempts =
+    unique(queries || []).filter(Boolean).slice(0, 2);
+
+  const found = [];
+  const errors = [];
+
+  for (const query of attempts) {
+    try {
+      const params = new URLSearchParams({
+        key: apiKey,
+        countrySet: "TW",
+        language: "zh-TW",
+        limit: "8",
+        typeahead: "false",
+      });
+
+      if (validTaiwanCoordinate(Number(nearLat), Number(nearLon))) {
+        params.set("lat", String(nearLat));
+        params.set("lon", String(nearLon));
+      }
+
+      const response = await fetchWithTimeout(
+        `${TOMTOM_SEARCH_URL}${encodeURIComponent(query)}.json?${params.toString()}`,
+        { headers: { Accept: "application/json" } },
+        8000
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 || response.status === 403
+            ? `HTTP ${response.status} (TOMTOM_API_KEY 無效)`
+            : `HTTP ${response.status}`
+        );
+      }
+
+      const data = await response.json();
+      const rows = Array.isArray(data?.results) ? data.results : [];
+
+      const candidates = rows
+        .map((item, index) => {
+          const lat = Number(item?.position?.lat);
+          const lon = Number(item?.position?.lon);
+
+          if (!validTaiwanCoordinate(lat, lon)) {
+            return null;
+          }
+
+          const address = item?.address || {};
+          const city =
+            clean(address.municipality || address.countrySubdivision) || null;
+          const categories = [
+            ...(item?.poi?.categories || []),
+            ...((item?.poi?.classifications || []).map((c) => c?.code)),
+          ].filter(Boolean);
+
+          return {
+            lat,
+            lon,
+            displayName:
+              clean(item?.poi?.name) ||
+              clean(address.streetName) ||
+              clean(address.freeformAddress) ||
+              query,
+            address: clean(address.freeformAddress) || null,
+            city,
+            county: clean(address.countrySecondarySubdivision) || null,
+            state: clean(address.countrySubdivision) || null,
+            district: clean(address.municipalitySubdivision) || null,
+            locality: null,
+            administrativeCity: city,
+            placeId: `tomtom:${item?.id || `${lat},${lon}`}`,
+            locationType:
+              clean(categories[0] || item?.type) || "place",
+            rawTypes: [item?.type, ...categories].filter(Boolean),
+            source: "TomTom Search",
+            providerRank: index,
+            coordinatesGrounded: true,
+            matchedQuery: query,
+          };
+        })
+        .filter(Boolean);
+
+      console.log("[TomTom fallback]", { query, candidates: candidates.length });
+
+      if (candidates.length) {
+        found.push(...candidates);
+        break;
+      }
+    } catch (error) {
+      errors.push(`TomTom ${query}: ${error.message}`);
+      console.warn("TomTom search unavailable:", query, error.message);
+    }
+  }
+
+  return {
+    candidates: dedupeCandidates(found),
+    errors,
+    configured: true,
+  };
+}
+
+
 async function searchQueries({
   queries,
   nearLat,
@@ -6296,9 +6420,53 @@ export async function resolvePlaceUniversal({
    * try the project's existing throttled
    * searchNominatimFallback().
    */
+  /*
+   * TOMTOM_FALLBACK_HOOK_V1
+   *
+   * When every primary provider returned nothing
+   * (Photon down, TDX keys invalid...), try TomTom
+   * for any place type, not only addresses.
+   */
+  search.providers.tomtomCandidates = 0;
+  search.providers.tomtomAvailable = null;
+
   if (
-    detectedPlaceType ===
-      "address" &&
+    !search.candidates.length
+  ) {
+    const tomtomFallback =
+      await searchTomTomFallback({
+        queries: [
+          normalized.normalizedQuery || rawQuery,
+          rawQuery,
+        ],
+        nearLat,
+        nearLon,
+      });
+
+    if (tomtomFallback.candidates.length) {
+      search.candidates =
+        dedupeCandidates([
+          ...tomtomFallback.candidates,
+          ...search.candidates,
+        ]);
+    }
+
+    search.errors.push(...tomtomFallback.errors);
+
+    search.providers.tomtomCandidates =
+      tomtomFallback.candidates.length;
+
+    search.providers.tomtomAvailable =
+      tomtomFallback.configured
+        ? tomtomFallback.errors.length === 0
+        : null;
+  }
+
+  /*
+   * Nominatim (OpenStreetMap) now also covers
+   * every place type, as the last free fallback.
+   */
+  if (
     !search.candidates.length
   ) {
     const nominatimFallback =
@@ -6402,8 +6570,13 @@ export async function resolvePlaceUniversal({
      * Photon down + TDX Tourism successfully returns
      * zero results = genuine 404, not provider outage.
      */
+    const fallbackAnswered =
+      search.providers.tomtomAvailable === true ||
+      search.providers.nominatimAvailable === true;
+
     const providerFailure =
-      detectedPlaceType ===
+      !fallbackAnswered &&
+      (detectedPlaceType ===
         "station"
         ? (
             !search.providers
@@ -6427,7 +6600,7 @@ export async function resolvePlaceUniversal({
               !search.providers
                 .tdxPortAvailable &&
               search.errors.length > 0
-            );
+            ));
 
     const error =
       new Error(
@@ -6816,4 +6989,4 @@ export const __placeSearchTestables = {
   stripLeadingCityName,
   tourismQueryVariants,
   mapWithConcurrency,
-};
+};
