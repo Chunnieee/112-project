@@ -1,0 +1,25 @@
+# ---- pedestrian-safety-lab 專用 .gitignore ----
+# 套件:各自 npm install,不要上傳
+node_modules/
+
+# 金鑰:真正的金鑰只放在 .env,絕對不要上傳(範本請用 .env.example)
+.env
+
+# SQLite 資料庫(約 1.3GB,超過 GitHub 單檔 100MB 上限)
+# 請改從 GitHub Release 下載,或用 npm run db:build 自己建
+database/*.db
+database/*.db-*
+database/*.tmp
+database/*.sqlite*
+
+# 原始 CSV(幾 GB,不放進 git)
+csv/
+database/csv/
+
+# 執行時自動產生的快取
+pedestrianSafety/data/osmRoadCache/
+__pycache__/
+*.pyc
+
+# 個人編輯器設定
+.vscode/

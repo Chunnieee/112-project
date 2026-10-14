@@ -1,0 +1,26 @@
+{
+  "name": "pedestrian-safety-lab",
+  "version": "1.0.0",
+  "description": "Standalone test bed for the Risk-Aware Navigation project's Pedestrian Safety Mode scoring module, split out so its three data sources (accidents / streetlights / convenience stores) can be audited and improved independently of the full navigation app.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "prestart": "node scripts/update-stores.mjs",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "audit": "node audit.js",
+    "update-stores": "node scripts/update-stores.mjs",
+    "calibrate": "node scripts/calibrate-modes.mjs",
+    "db:build": "python database/build_database.py",
+    "db:check": "node database/check_database.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}

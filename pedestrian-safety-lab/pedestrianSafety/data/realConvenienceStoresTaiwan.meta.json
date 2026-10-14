@@ -1,0 +1,20 @@
+{
+  "source": "https://taiwan-cvs-map.netlify.app/data/stores.json",
+  "sourceCredit": "台灣便利商店飽和度地圖(楊軒銘),資料來自各品牌官網,每月 1 號更新",
+  "fetchedAt": "2026-10-01T10:11:16.336Z",
+  "includePxMart": false,
+  "total": 13895,
+  "byBrand": {
+    "7-Eleven": 7270,
+    "FamilyMart": 4433,
+    "OK Mart": 380,
+    "Hi-Life": 1812
+  },
+  "dropped": {
+    "badRow": 0,
+    "outsideTaiwan": 0,
+    "countyMismatch": 2,
+    "pxMart": 1251,
+    "duplicate": 0
+  }
+}
