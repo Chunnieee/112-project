@@ -32,7 +32,7 @@
   ========================== -->
   <link
     rel="stylesheet"
-    href="style.css?v=200"
+    href="style.css?v=211"
   />
 </head>
 
@@ -40,6 +40,25 @@
 <body>
 
   <div class="app-shell">
+    <nav class="navigation-menu" aria-label="導航模式">
+      <button id="navigationMenuButton" class="navigation-menu-button" type="button" aria-expanded="false" aria-controls="navigationMenuPanel">
+        <span aria-hidden="true">☰</span> 導航選單 <span id="navigationModeCount" class="mode-count" hidden></span>
+      </button>
+      <div id="navigationMenuPanel" class="navigation-menu-panel" hidden>
+        <div class="menu-eyebrow">讓路線更適合這次出發</div>
+        <label class="navigation-option" for="nightModeToggle">
+          <span class="option-icon">☾</span><span><strong>夜間安全模式</strong><small>比較事故、照明與沿途商店</small></span>
+          <input id="nightModeToggle" type="checkbox" role="switch">
+        </label>
+        <label class="navigation-option" for="distributionToggle">
+          <span class="option-icon">⑂</span><span><strong>分流功能</strong><small>參考近期選擇，分散路線推薦</small></span>
+          <input id="distributionToggle" type="checkbox" role="switch">
+        </label>
+        <p class="menu-help">兩種模式可以同時開啟。安全評分只在夜間模式顯示。</p>
+        <button type="button" id="choiceHistoryButton" class="text-button">查看我的路線選擇紀錄 →</button>
+        <button type="button" id="routeSimulationButton" class="simulation-launch">多人分流模擬 <span>加入虛擬使用者，觀察推薦如何改變 ↗</span></button>
+      </div>
+    </nav>
 
 
     <!-- =========================
@@ -49,6 +68,16 @@
       id="map"
       aria-label="Navigation map"
     ></div>
+
+    <section id="nightMapPanel" class="night-map-panel" aria-label="夜間環境圖層" hidden>
+      <strong id="nightMapTitle">夜間環境圖層</strong>
+      <div class="night-map-toggles">
+        <label><input id="night-streetlights" type="checkbox" checked><span class="night-dot lamp-dot"></span>路燈 <b id="night-streetlights-count">—</b></label>
+        <label><input id="night-stores" type="checkbox" checked><span class="night-dot store-dot"></span>便利商店 <b id="night-stores-count">—</b></label>
+      </div>
+      <details><summary>圖層說明</summary><p id="nightMapStatus" role="status"></p><p id="nightMapDetail"></p></details>
+      <button id="nightMapRetry" class="text-button" type="button" hidden>重試載入點位</button>
+    </section>
 
 
 
@@ -238,6 +267,7 @@
           role="group"
           aria-label="交通工具"
         >
+          <button id="walkTransportBtn" class="transport-button" type="button" aria-pressed="false">步行</button>
           <button
             id="carTransportBtn"
             class="transport-button active"
@@ -354,6 +384,7 @@
       <section
         id="recommendationBox"
       ></section>
+      <section id="navigationInsights" class="navigation-insights" aria-label="安全與分流分析" hidden></section>
 
 
 
@@ -642,9 +673,25 @@
   ========================== -->
   <script
     type="module"
-    src="app.js?v=204"
+    src="app.js?v=211"
   ></script>
 
-  <script src="etaTripTracker.js?v=6"></script>
+  <dialog id="choiceHistoryDialog" class="choice-history-dialog" aria-labelledby="choiceHistoryTitle">
+    <div class="history-heading"><h2 id="choiceHistoryTitle">我的路線選擇紀錄</h2><button type="button" id="choiceHistoryClose" class="drawer-close" aria-label="關閉選擇紀錄">×</button></div>
+    <p>只記錄按下「選擇這條路線」的操作；同一裝置的重複確認不增加人數。</p>
+    <div id="choiceHistoryContent"></div>
+  </dialog>
+  <dialog id="routeSimulationDialog" class="simulation-dialog" aria-labelledby="routeSimulationTitle">
+    <div class="history-heading"><div><span class="sim-eyebrow">VIRTUAL ROUTE LAB</span><h2 id="routeSimulationTitle">多人分流模擬</h2></div><button type="button" id="routeSimulationClose" class="drawer-close" aria-label="關閉多人分流模擬">×</button></div>
+    <p id="simulationContext"></p>
+    <p class="simulation-disclaimer">這裡使用虛擬人數與模擬時間，不會寫入實際選路紀錄。每加入一位，就重新計算下一位的推薦。</p>
+    <div id="simulationControls" hidden>
+      <div class="sim-control-row"><label for="simulationStrategy">選路方式</label><select id="simulationStrategy"><option value="">跟隨當下推薦</option></select></div>
+      <div class="sim-actions"><button type="button" data-sim-add="1">加入 1 人</button><button type="button" data-sim-add="10">加入 10 人</button><button type="button" data-sim-add="50" class="sim-primary">加入 50 人</button><span></span><button type="button" data-sim-advance="1">時間 +1 分鐘</button><button type="button" data-sim-advance="10">時間 +10 分鐘</button><button type="button" data-sim-reset>重設模擬</button></div>
+    </div>
+    <p id="simulationStatus" role="status"></p>
+    <button id="simulationLoad" type="button" class="simulation-launch" hidden>載入目前路線的模擬</button>
+    <div id="simulationResults"></div>
+  </dialog>
 </body>
 </html>

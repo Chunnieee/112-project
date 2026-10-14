@@ -3,6 +3,7 @@ import {
   createRouteHash,
 } from "./historicalDb.js";
 import express from "express";
+import { createNavigationRouter } from "./navigationFeatures.js";
 import { assessHistoricalRisk } from "./riskEngine.js";
 import { assessAndRecordUncoveredPriorV9 } from "./uncoveredPriorV9.js";
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
@@ -632,7 +633,7 @@ console.log(
 );
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 const limiter = rateLimit({
   skip: (req) =>
@@ -645,6 +646,7 @@ const limiter = rateLimit({
 });
 
 app.use("/api", limiter);
+app.use('/api/navigation', createNavigationRouter());
 
 /*
  * Lightweight polling endpoint for the frontend.

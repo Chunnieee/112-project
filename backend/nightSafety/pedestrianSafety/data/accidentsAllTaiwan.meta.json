@@ -1,0 +1,39 @@
+{
+  "format": "gzip of little-endian records: float32 lat, float32 lon, uint16 day, uint8 flags, uint8 deaths, uint8 injuries (13 bytes)",
+  "recordSize": 13,
+  "count": 1932902,
+  "day0": "2021-01-01",
+  "dateRange": {
+    "from": "2021-01-01",
+    "to": "2025-12-31"
+  },
+  "flags": {
+    "pedestrian": 1,
+    "scooter": 2,
+    "car": 4,
+    "bicycle": 8,
+    "A1": 16
+  },
+  "countsByInvolvement": {
+    "scooter": 1720648,
+    "bicycle": 130290,
+    "car": 590573,
+    "A1": 8636,
+    "pedestrian": 85756
+  },
+  "rejected": {
+    "not-taiwan-location": 6,
+    "coordinate-outside-county": 1145
+  },
+  "carClasses": [
+    "全聯結車",
+    "半聯結車",
+    "大客車",
+    "大貨車",
+    "小客車",
+    "小貨車(含客、貨兩用)",
+    "曳引車",
+    "特種車",
+    "軍車"
+  ]
+}

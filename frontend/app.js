@@ -1,13 +1,10 @@
 import * as maplibregl from "https://unpkg.com/maplibre-gl@6.10.0/dist/maplibre-gl.mjs";
+import { createNavigationModes } from './navigationModes.js';
 
 const BACKEND_BASE_URL =
-  window.location.port === "3000"
-    ? window.location.origin
-    : "http://localhost:3000";
-
-// SCOOTER_FRONTEND_V1
-const SCOOTER_BACKEND_BASE_URL =
-  "http://localhost:3001";
+  ['5500','5501'].includes(window.location.port) || window.location.protocol === 'file:'
+    ? 'http://localhost:3000'
+    : window.location.origin;
 
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/dark";
 
@@ -46,11 +43,13 @@ let startMarker = null;
 let endMarker = null;
 let waypointMarkers = [];
 let latestRoutes = [];
+let plannedTripLabel = '';
 let selectedRouteIndex = 0;
 let routePreference = "fastest";
 let transportMode = "car";
 let myLocation = null;
 let waypointCounter = 0;
+let routeRequestGeneration = 0;
 
 let historyPollTimer = null;
 let historyPollGeneration = 0;
@@ -90,6 +89,17 @@ const els = {
   drawerContent: document.getElementById("drawerContent"),
 };
 
+const navigationModes = createNavigationModes({
+  map, mapReady, Popup: maplibregl.Popup,
+  baseUrl: BACKEND_BASE_URL,
+  getRoutes: () => latestRoutes,
+  getMode: () => transportMode,
+  getTripLabel: () => plannedTripLabel,
+  getSelectedIndex: () => selectedRouteIndex,
+  selectRoute: (index, options) => selectRoute(index, options),
+  rerender: () => { renderRouteCards(); renderRecommendation(); },
+});
+
 function isScooterRoute(route) {
   return (
     route?.transportMode ===
@@ -98,6 +108,8 @@ function isScooterRoute(route) {
 }
 
 function syncTransportButtons() {
+  document.getElementById('walkTransportBtn').classList.toggle('active', transportMode === 'walk');
+  document.getElementById('walkTransportBtn').setAttribute('aria-pressed', String(transportMode === 'walk'));
   const scooter =
     transportMode ===
     "scooter";
@@ -105,7 +117,7 @@ function syncTransportButtons() {
   els.carTransportBtn
     ?.classList.toggle(
       "active",
-      !scooter
+      transportMode === 'car'
     );
 
   els.scooterTransportBtn
@@ -117,7 +129,7 @@ function syncTransportButtons() {
   els.carTransportBtn
     ?.setAttribute(
       "aria-pressed",
-      String(!scooter)
+      String(transportMode === 'car')
     );
 
   els.scooterTransportBtn
@@ -129,9 +141,7 @@ function syncTransportButtons() {
 
 function setTransportMode(nextMode) {
   const normalized =
-    nextMode === "scooter"
-      ? "scooter"
-      : "car";
+    ['car','scooter','walk'].includes(nextMode) ? nextMode : 'car';
 
   if (
     transportMode ===
@@ -141,6 +151,10 @@ function setTransportMode(nextMode) {
   }
 
   stopHistoryPolling();
+
+  routeRequestGeneration++;
+  navigationModes.reset();
+  closeDetails();
 
   transportMode =
     normalized;
@@ -164,11 +178,10 @@ function setTransportMode(nextMode) {
 
   syncTransportButtons();
   updateModeAvailability();
+  navigationModes.render();
 
   setStatus(
-    normalized === "scooter"
-      ? "機車模式：使用獨立 Scooter V1 路由。"
-      : "汽車模式：使用原本汽車 ETA 系統。",
+    normalized === 'walk' ? '步行模式：使用步行路網。' : normalized === 'scooter' ? '機車模式：使用機車路網。' : '汽車模式：使用原本汽車 ETA 系統。',
     ""
   );
 }
@@ -1309,6 +1322,15 @@ async function drawRoutes(routes) {
   fitAllRoutes(routes);
 }
 
+function routeMapPadding() {
+  if (window.innerWidth > 850) return { top:70,right:70,bottom:130,left:460 };
+  const mapRect = map.getContainer().getBoundingClientRect();
+  const panelTop = document.getElementById('controlPanel').getBoundingClientRect().top - mapRect.top;
+  const bottom = Math.min(mapRect.height - 130, Math.max(70,mapRect.height - panelTop + 18));
+  const top = Math.min(document.body.classList.contains('night-safety-active') ? 175 : 75, mapRect.height - bottom - 80);
+  return { top:Math.max(35,top),right:35,bottom,left:25 };
+}
+
 function fitAllRoutes(routes) {
   const bounds =
     new maplibregl.LngLatBounds();
@@ -1336,18 +1358,8 @@ function fitAllRoutes(routes) {
 
   if (!hasPoint) return;
 
-  const leftPadding =
-    window.innerWidth > 850
-      ? 445
-      : 45;
-
   map.fitBounds(bounds, {
-    padding: {
-      top: 65,
-      right: 70,
-      bottom: 70,
-      left: leftPadding,
-    },
+    padding: routeMapPadding(),
     maxZoom: 15.7,
     duration: 650,
   });
@@ -1377,15 +1389,7 @@ function fitRoute(route) {
   if (!hasPoint) return;
 
   map.fitBounds(bounds, {
-    padding: {
-      top: 70,
-      right: 70,
-      bottom: 70,
-      left:
-        window.innerWidth > 850
-          ? 445
-          : 45,
-    },
+    padding: routeMapPadding(),
     maxZoom: 16,
     duration: 550,
   });
@@ -1469,6 +1473,7 @@ function differenceFromFastest(route) {
 }
 
 function routeStateChips(route) {
+  if (route.transportMode === 'walk') return '<span class="state-chip good">步行路網</span>';
   if (
     isScooterRoute(route)
   ) {
@@ -1533,6 +1538,7 @@ function routeStateChips(route) {
 }
 
 function renderRecommendation() {
+  navigationModes.render();
   if (!latestRoutes.length) {
     els.recommendationBox.innerHTML =
       "";
@@ -1543,6 +1549,14 @@ function renderRecommendation() {
     latestRoutes[
       selectedRouteIndex
     ];
+
+  if (route.transportMode === 'walk') {
+    els.recommendationBox.innerHTML = `<div class="recommend-card">
+      <div class="recommend-top"><div class="recommend-title">${esc(route.label)}</div><span class="recommend-label">步行路線</span></div>
+      <div class="recommend-main"><div class="recommend-eta"><strong>${fmt(route.expectedMin)} 分鐘</strong><span>預估步行時間</span></div>
+      <div class="recommend-side"><span>路線長度</span><strong>${fmt(route.distanceKm,2)} km</strong></div></div></div>`;
+    return;
+  }
 
   if (
     isScooterRoute(route)
@@ -1621,7 +1635,7 @@ function renderRecommendation() {
     differenceFromFastest(route);
 
   const label =
-    routePreference === "reliable" &&
+    navigationModes.active() ? '目前查看的路線' : routePreference === "reliable" &&
     ready
       ? "RELIABLE CHOICE"
       : "FASTEST CHOICE";
@@ -1704,7 +1718,7 @@ function renderRouteCards() {
           differenceFromFastest(route);
 
         const insightA =
-          scooter
+          route.transportMode === 'walk' ? '<div class="insight"><span>交通方式</span><strong>步行</strong></div>' : scooter
             ? `
               <div class="insight">
                 <span>Model</span>
@@ -1743,7 +1757,7 @@ function renderRouteCards() {
           `;
 
         const note =
-          scooter
+          route.transportMode === 'walk' ? '使用步行路網；時間依路線服務估計。' : scooter
             ? "Scooter V1 is isolated from car history and car calibration."
             : riskReady(route)
             ? "Reliable ETA uses empirical historical P90."
@@ -1789,6 +1803,7 @@ function renderRouteCards() {
             <div class="state-row">
               ${routeStateChips(route)}
             </div>
+            ${navigationModes.card(index)}
 
             <div class="route-card-footer">
               <span class="route-card-note">
@@ -1818,7 +1833,7 @@ function renderRouteCards() {
         (event) => {
           if (
             event.target.closest(
-              ".details-button"
+              ".details-button, .choose-route-button"
             )
           ) {
             return;
@@ -1889,8 +1904,7 @@ function updateFloatingSummary(route) {
 
 function updateModeAvailability() {
   if (
-    transportMode ===
-    "scooter"
+    transportMode !== 'car'
   ) {
     routePreference =
       "fastest";
@@ -2001,6 +2015,20 @@ function openDetails(index) {
     latestRoutes[index];
 
   if (!route) return;
+
+  if (['walk', 'scooter'].includes(route.transportMode)) {
+    selectRoute(index, { fit: false });
+    els.drawerTitle.textContent = route.label;
+    els.drawerContent.innerHTML = `<section class="detail-section"><div class="detail-section-title">路線資訊</div><div class="detail-grid">
+      ${detailsRow('交通方式', route.transportMode === 'walk' ? '步行' : '機車')}
+      ${detailsRow('預估時間', `${fmt(route.expectedMin)} 分鐘`)}
+      ${detailsRow('路線長度', `${fmt(route.distanceKm,2)} 公里`)}
+      </div><p class="detail-note">安全與分流評分請見主畫面的分析區；選擇紀錄須在候選卡片按下「選擇這條路線」。</p></section>`;
+    els.drawer.classList.add('open');
+    els.drawer.setAttribute('aria-hidden','false');
+    els.drawerBackdrop.hidden = false;
+    return;
+  }
 
   selectRoute(
     index,
@@ -2238,6 +2266,9 @@ function closeDetails() {
 }
 
 async function calculateRoute() {
+  const requestGeneration = ++routeRequestGeneration;
+  const requestedMode = transportMode;
+  navigationModes.reset();
   stopHistoryPolling();
 
   try {
@@ -2262,6 +2293,14 @@ async function calculateRoute() {
       "正在計算候選路線…",
       "loading"
     );
+    latestRoutes = [];
+    plannedTripLabel = '';
+    selectedRouteIndex = 0;
+    closeDetails();
+    removeRouteLayers();
+    els.floatingSummary.hidden = true;
+    renderRouteCards();
+    renderRecommendation();
 
     const [
       startPoint,
@@ -2270,8 +2309,10 @@ async function calculateRoute() {
       geocode(startText),
       geocode(endText),
     ]);
+    if (requestGeneration !== routeRequestGeneration) return;
 
     await mapReady;
+    if (requestGeneration !== routeRequestGeneration) return;
 
     removeAllMapContent();
 
@@ -2290,20 +2331,17 @@ async function calculateRoute() {
           endPoint.lat,
       });
 
-    const routeBaseUrl =
-      transportMode === "scooter"
-        ? SCOOTER_BACKEND_BASE_URL
-        : BACKEND_BASE_URL;
+    const routeBaseUrl = BACKEND_BASE_URL;
 
     const routePath =
-      transportMode === "scooter"
-        ? "/api/scooter-route"
-        : "/api/route";
+      requestedMode === 'car' ? '/api/route' : '/api/navigation/route';
+    if (requestedMode !== 'car') params.set('mode', requestedMode);
 
     const data =
       await fetchJson(
         `${routeBaseUrl}${routePath}?${params.toString()}`
       );
+    if (requestGeneration !== routeRequestGeneration) return;
 
     if (
       !Array.isArray(data?.routes) ||
@@ -2316,6 +2354,7 @@ async function calculateRoute() {
 
     latestRoutes =
       data.routes;
+    plannedTripLabel = `${startText} → ${endText}`;
 
     routePreference =
       "fastest";
@@ -2328,6 +2367,7 @@ async function calculateRoute() {
     await drawRoutes(
       latestRoutes
     );
+    if (requestGeneration !== routeRequestGeneration) return;
 
     renderRouteCards();
     renderRecommendation();
@@ -2336,13 +2376,13 @@ async function calculateRoute() {
       selectedRouteIndex,
       { fit: false }
     );
+    navigationModes.analyze();
 
     if (
-      transportMode ===
-      "scooter"
+      requestedMode !== 'car'
     ) {
       setStatus(
-        `已找到 ${latestRoutes.length} 條機車候選路線；目前為 Scooter V1 baseline，尚未套用 live traffic / scooter calibration。`,
+        `已找到 ${latestRoutes.length} 條${requestedMode === 'walk' ? '步行' : '機車'}候選路線。`,
         "success"
       );
 
@@ -2364,6 +2404,7 @@ async function calculateRoute() {
 
     startHistoryPolling();
   } catch (error) {
+    if (requestGeneration !== routeRequestGeneration) return;
     console.error(error);
 
     setStatus(
@@ -2494,11 +2535,14 @@ async function calculateMultiModalRoute() {
 }
 
 function clearRoutes() {
+  routeRequestGeneration++;
+  navigationModes.reset();
   stopHistoryPolling();
 
   removeAllMapContent();
 
   latestRoutes = [];
+  navigationModes.render();
   selectedRouteIndex = 0;
   routePreference = "fastest";
 
@@ -2597,6 +2641,7 @@ els.carTransportBtn
         "car"
       )
   );
+document.getElementById('walkTransportBtn').addEventListener('click', () => setTransportMode('walk'));
 
 els.scooterTransportBtn
   ?.addEventListener(
@@ -3270,6 +3315,7 @@ checkBackend();
 
 
       async function searchNow() {
+        if (document.activeElement !== input) return;
         const query =
           input.value.trim();
 
@@ -3346,7 +3392,7 @@ checkBackend();
            * Ignore stale request result.
            */
           if (
-            input.value.trim() !==
+            document.activeElement !== input || input.value.trim() !==
             query
           ) {
             return;
