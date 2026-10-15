@@ -31,7 +31,7 @@ function envInteger(
 const MIN_UNIQUE_DAYS =
   envInteger(
     "RISK_MIN_UNIQUE_DAYS",
-    8,
+    4,
     3
   );
 

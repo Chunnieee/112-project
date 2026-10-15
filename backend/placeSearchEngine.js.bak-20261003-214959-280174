@@ -1,0 +1,1707 @@
+const PHOTON_URL = "https://photon.komoot.io/api/";
+
+function validTaiwanCoordinate(lat, lon) {
+  return (
+    Number.isFinite(Number(lat)) &&
+    Number.isFinite(Number(lon)) &&
+    Number(lat) >= 21 &&
+    Number(lat) <= 27 &&
+    Number(lon) >= 118 &&
+    Number(lon) <= 124
+  );
+}
+
+function clean(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+const TAIWAN_CITY_ALIASES = [
+  {
+    canonical: "Taipei",
+    names: [
+      "台北",
+      "臺北",
+      "台北市",
+      "臺北市",
+      "Taipei",
+    ],
+  },
+  {
+    canonical: "New Taipei",
+    names: [
+      "新北",
+      "新北市",
+      "New Taipei",
+    ],
+  },
+  {
+    canonical: "Taoyuan",
+    names: [
+      "桃園",
+      "桃園市",
+      "Taoyuan",
+    ],
+  },
+  {
+    canonical: "Taichung",
+    names: [
+      "台中",
+      "臺中",
+      "台中市",
+      "臺中市",
+      "Taichung",
+    ],
+  },
+  {
+    canonical: "Tainan",
+    names: [
+      "台南",
+      "臺南",
+      "台南市",
+      "臺南市",
+      "Tainan",
+    ],
+  },
+  {
+    canonical: "Kaohsiung",
+    names: [
+      "高雄",
+      "高雄市",
+      "Kaohsiung",
+    ],
+  },
+  {
+    canonical: "Keelung",
+    names: [
+      "基隆",
+      "基隆市",
+      "Keelung",
+    ],
+  },
+  {
+    canonical: "Hsinchu",
+    names: [
+      "新竹",
+      "新竹市",
+      "新竹縣",
+      "Hsinchu",
+    ],
+  },
+  {
+    canonical: "Miaoli",
+    names: [
+      "苗栗",
+      "苗栗縣",
+      "Miaoli",
+    ],
+  },
+  {
+    canonical: "Changhua",
+    names: [
+      "彰化",
+      "彰化縣",
+      "Changhua",
+    ],
+  },
+  {
+    canonical: "Nantou",
+    names: [
+      "南投",
+      "南投縣",
+      "Nantou",
+    ],
+  },
+  {
+    canonical: "Yunlin",
+    names: [
+      "雲林",
+      "雲林縣",
+      "Yunlin",
+    ],
+  },
+  {
+    canonical: "Chiayi",
+    names: [
+      "嘉義",
+      "嘉義市",
+      "嘉義縣",
+      "Chiayi",
+    ],
+  },
+  {
+    canonical: "Pingtung",
+    names: [
+      "屏東",
+      "屏東縣",
+      "Pingtung",
+    ],
+  },
+  {
+    canonical: "Yilan",
+    names: [
+      "宜蘭",
+      "宜蘭縣",
+      "Yilan",
+    ],
+  },
+  {
+    canonical: "Hualien",
+    names: [
+      "花蓮",
+      "花蓮縣",
+      "Hualien",
+    ],
+  },
+  {
+    canonical: "Taitung",
+    names: [
+      "台東",
+      "臺東",
+      "台東縣",
+      "臺東縣",
+      "Taitung",
+    ],
+  },
+];
+
+function normalizeCityName(value) {
+  const text =
+    clean(value)
+      .toLowerCase();
+
+  if (!text) {
+    return "";
+  }
+
+  for (
+    const item of
+    TAIWAN_CITY_ALIASES
+  ) {
+    if (
+      item.names.some(
+        (name) =>
+          text.includes(
+            name.toLowerCase()
+          )
+      )
+    ) {
+      return item.canonical;
+    }
+  }
+
+  return "";
+}
+
+function inferCityHint(
+  ...values
+) {
+  for (const value of values) {
+    const city =
+      normalizeCityName(
+        value
+      );
+
+    if (city) {
+      return city;
+    }
+  }
+
+  return "";
+}
+
+function normalizeComparable(
+  value
+) {
+  return clean(value)
+    .toLowerCase()
+    .replace(
+      /臺/g,
+      "台"
+    )
+    .replace(
+      /[\s,，.。\-_/()（）]/g,
+      ""
+    );
+}
+
+function placeTypeFromText(
+  value
+) {
+  const text =
+    normalizeComparable(
+      value
+    );
+
+  if (
+    /車站|火車站|railway|station/.test(
+      text
+    )
+  ) {
+    return "station";
+  }
+
+  if (
+    /博物館|museum/.test(
+      text
+    )
+  ) {
+    return "museum";
+  }
+
+  if (
+    /大學|學院|學校|university|college|school/.test(
+      text
+    )
+  ) {
+    return "school";
+  }
+
+  if (
+    /路|街|巷|弄|號|road|street/.test(
+      text
+    )
+  ) {
+    return "address";
+  }
+
+  return "unknown";
+}
+
+function candidateTypeMatches(
+  candidate,
+  expectedType
+) {
+  if (
+    !expectedType ||
+    expectedType ===
+      "unknown"
+  ) {
+    return false;
+  }
+
+  const haystack =
+    [
+      candidate
+        ?.displayName,
+      candidate
+        ?.locationType,
+      ...(candidate
+        ?.rawTypes ||
+        []),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+  if (
+    expectedType ===
+    "station"
+  ) {
+    return /station|railway|train/.test(
+      haystack
+    );
+  }
+
+  if (
+    expectedType ===
+    "museum"
+  ) {
+    return /museum|tourism/.test(
+      haystack
+    );
+  }
+
+  if (
+    expectedType ===
+    "school"
+  ) {
+    return /university|college|school/.test(
+      haystack
+    );
+  }
+
+  if (
+    expectedType ===
+    "address"
+  ) {
+    return /house|street|address/.test(
+      haystack
+    );
+  }
+
+  return false;
+}
+
+function scoreCandidate(
+  candidate,
+  {
+    rawQuery,
+    normalizedQuery,
+    cityHint,
+    placeType,
+  }
+) {
+  let score = 0;
+
+  const candidateCity =
+    inferCityHint(
+      candidate?.city,
+      candidate?.address,
+      candidate?.displayName
+    );
+
+  /*
+   * 使用者明確提供城市時，
+   * 跨城市結果直接淘汰。
+   */
+  if (
+    cityHint &&
+    candidateCity &&
+    cityHint !==
+      candidateCity
+  ) {
+    return -10000;
+  }
+
+  if (
+    cityHint &&
+    candidateCity ===
+      cityHint
+  ) {
+    score += 100;
+  }
+
+  const queryText =
+    normalizeComparable(
+      normalizedQuery ||
+        rawQuery
+    );
+
+  const candidateText =
+    normalizeComparable(
+      [
+        candidate
+          ?.displayName,
+        candidate?.address,
+      ].join(" ")
+    );
+
+  if (
+    queryText &&
+    candidateText
+  ) {
+    if (
+      candidateText.includes(
+        queryText
+      )
+    ) {
+      score += 60;
+    }
+
+    if (
+      queryText.includes(
+        candidateText
+      )
+    ) {
+      score += 40;
+    }
+  }
+
+  if (
+    candidateTypeMatches(
+      candidate,
+      placeType
+    )
+  ) {
+    score += 30;
+  }
+
+  /*
+   * Provider 自己的排名仍有參考價值，
+   * 但不能凌駕城市一致性。
+   */
+  const rank =
+    Number(
+      candidate
+        ?.providerRank
+    );
+
+  if (
+    Number.isFinite(rank)
+  ) {
+    score +=
+      Math.max(
+        0,
+        10 - rank
+      );
+  }
+
+  return score;
+}
+
+function unique(values) {
+  return [...new Set(values.map(clean).filter(Boolean))];
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 9000) {
+  const controller = new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseJsonLoose(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = String(text).match(/\{[\s\S]*\}/);
+
+    if (!match) return null;
+
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function directCoordinate(query) {
+  const match = String(query)
+    .trim()
+    .match(
+      /^\s*(-?\d+(?:\.\d+)?)\s*[,， ]\s*(-?\d+(?:\.\d+)?)\s*$/
+    );
+
+  if (!match) return null;
+
+  const a = Number(match[1]);
+  const b = Number(match[2]);
+
+  if (validTaiwanCoordinate(a, b)) {
+    return {
+      lat: a,
+      lon: b,
+    };
+  }
+
+  if (validTaiwanCoordinate(b, a)) {
+    return {
+      lat: b,
+      lon: a,
+    };
+  }
+
+  return null;
+}
+
+async function normalizeWithGroq(query, apiKey) {
+  const fallback = {
+    normalizedQuery: query,
+    aliases: [],
+    cityHint: "",
+    placeType: "unknown",
+    confidence: 0,
+    reason: "AI normalization unavailable or unnecessary",
+  };
+
+  if (!apiKey) {
+    return fallback;
+  }
+
+  // 目前 Groq 官方仍支援這兩個 production model。
+  // 任一失敗就試下一個；全部失敗也不會阻止地點搜尋。
+  const models = [
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+  ];
+
+  for (const model of models) {
+    try {
+      const response = await fetchWithTimeout(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+
+            messages: [
+              {
+                role: "system",
+                content:
+                  "你是台灣地點搜尋文字導正器。" +
+                  "你只能修正名稱、補全正式名稱、提供別名、城市提示和地點類型。" +
+                  "絕對不可以產生經緯度。" +
+                  "只輸出 JSON。",
+              },
+
+              {
+                role: "user",
+                content:
+                  `使用者輸入：${query}\n` +
+                  '輸出格式：{"normalizedQuery":"...","aliases":["..."],"cityHint":"...","placeType":"station|address|poi|district|unknown","confidence":0.0,"reason":"..."}\n' +
+                  "例如：政治大學可以導正為國立政治大學；" +
+                  "台北101可以保留台北101；" +
+                  "動物園如果沒有其他上下文，不要自己發明地址。",
+              },
+            ],
+          }),
+        },
+        8000
+      );
+
+      if (!response.ok) {
+        console.log(
+          `Groq ${model} unavailable: HTTP ${response.status}`
+        );
+        continue;
+      }
+
+      const data = await response.json();
+
+      const text =
+        data?.choices?.[0]?.message?.content || "";
+
+      const parsed = parseJsonLoose(text);
+
+      if (!parsed) {
+        continue;
+      }
+
+      return {
+        normalizedQuery:
+          clean(parsed.normalizedQuery) || query,
+
+        aliases:
+          Array.isArray(parsed.aliases)
+            ? unique(parsed.aliases).slice(0, 6)
+            : [],
+
+        cityHint:
+          clean(parsed.cityHint),
+
+        placeType:
+          clean(parsed.placeType) || "unknown",
+
+        confidence:
+          Number(parsed.confidence) || 0,
+
+        reason:
+          clean(parsed.reason),
+
+        model,
+      };
+    } catch (error) {
+      console.log(
+        `Groq ${model} unavailable:`,
+        error.message
+      );
+    }
+  }
+
+  return fallback;
+}
+
+async function searchTomTom({
+  query,
+  apiKey,
+  nearLat,
+  nearLon,
+}) {
+  if (!apiKey) {
+    return [];
+  }
+
+  const params = new URLSearchParams({
+    key: apiKey,
+    countrySet: "TW",
+    limit: "10",
+    typeahead: "false",
+    maxFuzzyLevel: "3",
+    view: "TW",
+  });
+
+  if (
+    validTaiwanCoordinate(
+      Number(nearLat),
+      Number(nearLon)
+    )
+  ) {
+    params.set(
+      "geobias",
+      `point:${Number(nearLat)},${Number(nearLon)}`
+    );
+  }
+
+  const url =
+    "https://api.tomtom.com/search/2/search/" +
+    encodeURIComponent(query) +
+    ".json?" +
+    params.toString();
+
+  const response = await fetchWithTimeout(
+    url,
+    {
+      headers: {
+        Accept: "application/json",
+      },
+    },
+    9000
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+
+    throw new Error(
+      `TomTom HTTP ${response.status}: ${text.slice(0, 150)}`
+    );
+  }
+
+  const data = await response.json();
+
+  const results = Array.isArray(data?.results)
+    ? data.results
+    : [];
+
+  return results
+    .map((item, index) => {
+      const lat = Number(item?.position?.lat);
+      const lon = Number(item?.position?.lon);
+
+      if (!validTaiwanCoordinate(lat, lon)) {
+        return null;
+      }
+
+      const name =
+        clean(item?.poi?.name) ||
+        clean(item?.address?.freeformAddress) ||
+        clean(item?.address?.streetName) ||
+        query;
+
+      return {
+        lat,
+        lon,
+
+        displayName: name,
+
+        address:
+          clean(item?.address?.freeformAddress) ||
+          null,
+
+        city:
+          clean(
+            item?.address?.municipality ||
+            item?.address?.municipalitySubdivision
+          ) || null,
+
+        district:
+          clean(
+            item?.address?.countrySecondarySubdivision ||
+            item?.address?.municipalitySubdivision
+          ) || null,
+
+        placeId:
+          item?.id ||
+          `tomtom:${lat},${lon}`,
+
+        locationType:
+          item?.type ||
+          item?.entityType ||
+          "place",
+
+        rawTypes: [
+          item?.type,
+          item?.entityType,
+          item?.poi?.categories?.[0],
+        ].filter(Boolean),
+
+        source:
+          "TomTom Search",
+
+        providerRank:
+          index,
+
+        coordinatesGrounded:
+          true,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function searchPhoton({
+  query,
+  nearLat,
+  nearLon,
+}) {
+  const params = new URLSearchParams({
+    q: query,
+    limit: "10",
+
+    // 台灣及離島的大範圍 bbox。
+    bbox: "118,21,124,27",
+  });
+
+  if (
+    validTaiwanCoordinate(
+      Number(nearLat),
+      Number(nearLon)
+    )
+  ) {
+    params.set(
+      "lat",
+      String(Number(nearLat))
+    );
+
+    params.set(
+      "lon",
+      String(Number(nearLon))
+    );
+  }
+
+  // 不再使用 lang=zh。
+  const response = await fetchWithTimeout(
+    `${PHOTON_URL}?${params.toString()}`,
+    {
+      headers: {
+        Accept: "application/json",
+
+        "Accept-Language":
+          "zh-TW,zh;q=0.9,en;q=0.7",
+
+        "User-Agent":
+          "tdx-navigation-project/1.0",
+      },
+    },
+    9000
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+
+    throw new Error(
+      `Photon HTTP ${response.status}: ${text.slice(0, 150)}`
+    );
+  }
+
+  const data = await response.json();
+
+  const features =
+    Array.isArray(data?.features)
+      ? data.features
+      : [];
+
+  return features
+    .map((feature, index) => {
+      const props =
+        feature?.properties || {};
+
+      const coords =
+        feature?.geometry?.coordinates || [];
+
+      const lon = Number(coords[0]);
+      const lat = Number(coords[1]);
+
+      if (!validTaiwanCoordinate(lat, lon)) {
+        return null;
+      }
+
+      const name =
+        clean(props?.name) ||
+        clean(props?.street) ||
+        clean(props?.city) ||
+        clean(props?.district) ||
+        query;
+
+      const address = [
+        props?.housenumber && props?.street
+          ? `${props.street} ${props.housenumber}`
+          : props?.street,
+
+        props?.district,
+        props?.city,
+        props?.county,
+        props?.state,
+        props?.postcode,
+        props?.country,
+      ]
+        .filter(Boolean)
+        .filter(
+          (value, i, arr) =>
+            arr.indexOf(value) === i
+        )
+        .join(", ");
+
+      return {
+        lat,
+        lon,
+
+        displayName: name,
+
+        address:
+          address || null,
+
+        city:
+          clean(
+            props?.city ||
+            props?.county
+          ) || null,
+
+        district:
+          clean(props?.district) || null,
+
+        placeId:
+          `photon:${props?.osm_type || "x"}:${props?.osm_id || `${lat},${lon}`}`,
+
+        locationType:
+          props?.type ||
+          props?.osm_value ||
+          "place",
+
+        rawTypes: [
+          props?.osm_key,
+          props?.osm_value,
+          props?.type,
+        ].filter(Boolean),
+
+        source:
+          "Photon / OpenStreetMap",
+
+        providerRank:
+          index,
+
+        coordinatesGrounded:
+          true,
+      };
+    })
+    .filter(Boolean);
+}
+
+function dedupeCandidates(items) {
+  const seen = new Set();
+  const result = [];
+
+  for (const item of items) {
+    const key =
+      `${Number(item.lat).toFixed(5)},` +
+      `${Number(item.lon).toFixed(5)}`;
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
+}
+
+async function searchQueries({
+  queries,
+  tomtomApiKey,
+  nearLat,
+  nearLon,
+}) {
+  const found = [];
+  const errors = [];
+
+  for (const query of unique(queries)) {
+    if (tomtomApiKey) {
+      try {
+        const items =
+          await searchTomTom({
+            query,
+            apiKey:
+              tomtomApiKey,
+            nearLat,
+            nearLon,
+          });
+
+        found.push(
+          ...items
+        );
+      } catch (error) {
+        errors.push(
+          error.message
+        );
+
+        console.log(
+          "TomTom search unavailable:",
+          error.message
+        );
+      }
+    }
+
+    try {
+      const items =
+        await searchPhoton({
+          query,
+          nearLat,
+          nearLon,
+        });
+
+      found.push(
+        ...items
+      );
+    } catch (error) {
+      errors.push(
+        error.message
+      );
+
+      console.log(
+        "Photon search unavailable:",
+        error.message
+      );
+    }
+  }
+
+  return {
+    candidates:
+      dedupeCandidates(
+        found
+      ),
+
+    errors,
+  };
+}
+
+
+const TDX_CITY_RULES = [
+  ["NewTaipei", [
+    "新北市",
+    "new taipei city",
+    "new taipei"
+  ]],
+
+  ["Taipei", [
+    "台北市",
+    "臺北市",
+    "taipei city"
+  ]],
+
+  ["Taoyuan", [
+    "桃園市",
+    "taoyuan city"
+  ]],
+
+  ["Taichung", [
+    "台中市",
+    "臺中市",
+    "taichung city"
+  ]],
+
+  ["Tainan", [
+    "台南市",
+    "臺南市",
+    "tainan city"
+  ]],
+
+  ["Kaohsiung", [
+    "高雄市",
+    "kaohsiung city"
+  ]],
+
+  ["Keelung", [
+    "基隆市",
+    "keelung city"
+  ]],
+
+  ["HsinchuCounty", [
+    "新竹縣",
+    "hsinchu county"
+  ]],
+
+  ["Hsinchu", [
+    "新竹市",
+    "hsinchu city"
+  ]],
+
+  ["MiaoliCounty", [
+    "苗栗縣",
+    "miaoli county"
+  ]],
+
+  ["ChanghuaCounty", [
+    "彰化縣",
+    "changhua county"
+  ]],
+
+  ["NantouCounty", [
+    "南投縣",
+    "nantou county"
+  ]],
+
+  ["YunlinCounty", [
+    "雲林縣",
+    "yunlin county"
+  ]],
+
+  ["ChiayiCounty", [
+    "嘉義縣",
+    "chiayi county"
+  ]],
+
+  ["Chiayi", [
+    "嘉義市",
+    "chiayi city"
+  ]],
+
+  ["PingtungCounty", [
+    "屏東縣",
+    "pingtung county"
+  ]],
+
+  ["YilanCounty", [
+    "宜蘭縣",
+    "yilan county"
+  ]],
+
+  ["HualienCounty", [
+    "花蓮縣",
+    "hualien county"
+  ]],
+
+  ["TaitungCounty", [
+    "台東縣",
+    "臺東縣",
+    "taitung county"
+  ]],
+
+  ["PenghuCounty", [
+    "澎湖縣",
+    "penghu county"
+  ]],
+
+  ["KinmenCounty", [
+    "金門縣",
+    "kinmen county"
+  ]],
+
+  ["LienchiangCounty", [
+    "連江縣",
+    "lienchiang county"
+  ]],
+];
+
+
+function tdxCityFromAdministrativeText(value) {
+  const text =
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+  if (!text) {
+    return null;
+  }
+
+  for (
+    const [tdxCity, aliases]
+    of TDX_CITY_RULES
+  ) {
+    if (
+      aliases.some(
+        (alias) =>
+          text.includes(
+            alias.toLowerCase()
+          )
+      )
+    ) {
+      return tdxCity;
+    }
+  }
+
+  return null;
+}
+
+
+const reverseGeocodeCache =
+  new Map();
+
+
+export async function reverseGeocodeCoordinate({
+  lat,
+  lon,
+  apiKey = "",
+}) {
+
+  const latitude =
+    Number(lat);
+
+  const longitude =
+    Number(lon);
+
+
+  if (
+    !validTaiwanCoordinate(
+      latitude,
+      longitude
+    )
+  ) {
+    return null;
+  }
+
+
+  if (!apiKey) {
+    return null;
+  }
+
+
+  /*
+   * ~11 meter cache cells.
+   * Good enough for administrative-area
+   * classification while avoiding duplicate
+   * TomTom calls from similar route geometry.
+   */
+  const cacheKey =
+    `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+
+
+  if (
+    reverseGeocodeCache.has(
+      cacheKey
+    )
+  ) {
+    return reverseGeocodeCache.get(
+      cacheKey
+    );
+  }
+
+
+  const params =
+    new URLSearchParams({
+      key: apiKey,
+      language: "zh-TW",
+    });
+
+
+  const url =
+    "https://api.tomtom.com/search/2/reverseGeocode/" +
+    `${latitude},${longitude}.json?` +
+    params.toString();
+
+
+  const response =
+    await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          Accept:
+            "application/json",
+        },
+      },
+      8000
+    );
+
+
+  if (!response.ok) {
+    const text =
+      await response.text();
+
+    throw new Error(
+      `TomTom reverse geocode HTTP ${response.status}: ` +
+      text.slice(0, 160)
+    );
+  }
+
+
+  const data =
+    await response.json();
+
+
+  const addresses =
+    Array.isArray(
+      data?.addresses
+    )
+      ? data.addresses
+      : [];
+
+
+  const address =
+    addresses?.[0]?.address ||
+    null;
+
+
+  if (!address) {
+    reverseGeocodeCache.set(
+      cacheKey,
+      null
+    );
+
+    return null;
+  }
+
+
+  /*
+   * Do NOT infer city from coordinates
+   * ourselves.
+   *
+   * The coordinates are reverse-geocoded
+   * against the real map provider first.
+   */
+  const administrativeText =
+    [
+      address
+        ?.countrySubdivision,
+
+      address
+        ?.countrySubdivisionName,
+
+      address
+        ?.municipality,
+
+      address
+        ?.countrySecondarySubdivision,
+
+      address
+        ?.municipalitySubdivision,
+
+      address
+        ?.freeformAddress,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+
+  const tdxCity =
+    tdxCityFromAdministrativeText(
+      administrativeText
+    );
+
+
+  const result = {
+    lat:
+      latitude,
+
+    lon:
+      longitude,
+
+    tdxCity,
+
+    municipality:
+      clean(
+        address
+          ?.municipality
+      ) || null,
+
+    subdivision:
+      clean(
+        address
+          ?.countrySubdivision
+      ) || null,
+
+    district:
+      clean(
+        address
+          ?.municipalitySubdivision ||
+        address
+          ?.countrySecondarySubdivision
+      ) || null,
+
+    address:
+      clean(
+        address
+          ?.freeformAddress
+      ) || null,
+
+    source:
+      "TomTom Reverse Geocoding",
+  };
+
+
+  reverseGeocodeCache.set(
+    cacheKey,
+    result
+  );
+
+
+  return result;
+}
+
+
+export async function resolvePlaceUniversal({
+  query,
+  groqApiKey = "",
+  tomtomApiKey = "",
+  nearLat = null,
+  nearLon = null,
+}) {
+  const rawQuery =
+    clean(query);
+
+  if (!rawQuery) {
+    const error =
+      new Error("請輸入地點");
+
+    error.status = 400;
+    throw error;
+  }
+
+  /*
+   * 直接輸入經緯度時，
+   * 不需要做文字搜尋。
+   */
+  const direct =
+    directCoordinate(
+      rawQuery
+    );
+
+  if (direct) {
+    const result = {
+      ...direct,
+
+      displayName:
+        rawQuery,
+
+      address:
+        null,
+
+      placeId:
+        `coordinate:${direct.lat},${direct.lon}`,
+
+      locationType:
+        "coordinate",
+
+      rawTypes: [
+        "coordinate",
+      ],
+
+      source:
+        "Direct coordinate",
+
+      coordinatesGrounded:
+        true,
+    };
+
+    return {
+      input:
+        rawQuery,
+
+      normalized: {
+        normalizedQuery:
+          rawQuery,
+
+        aliases: [],
+
+        cityHint: "",
+
+        placeType:
+          "coordinate",
+
+        confidence: 1,
+
+        reason:
+          "Direct coordinate",
+      },
+
+      result,
+
+      candidates: [
+        result,
+      ],
+
+      source:
+        result.source,
+
+      validation: {
+        accepted: true,
+
+        coordinatesGrounded:
+          true,
+
+        aiGeneratedCoordinates:
+          false,
+
+        taiwanOnly:
+          true,
+
+        locationBiasUsed:
+          false,
+      },
+    };
+  }
+
+  /*
+   * 每次都做文字理解。
+   *
+   * Groq 只能：
+   * - 修正錯字
+   * - 正規化名稱
+   * - 提供 aliases
+   * - 判斷城市 / 類型
+   *
+   * AI 絕對不產生座標。
+   */
+  const normalized =
+    await normalizeWithGroq(
+      rawQuery,
+      groqApiKey
+    );
+
+  /*
+   * 城市不只依賴 AI。
+   * 使用者原始輸入本身如果包含
+   * 台中、台南、高雄等，就直接辨識。
+   */
+  const cityHint =
+    inferCityHint(
+      rawQuery,
+      normalized.cityHint,
+      normalized.normalizedQuery
+    );
+
+  const detectedPlaceType =
+    normalized.placeType &&
+    normalized.placeType !==
+      "unknown"
+      ? normalized.placeType
+      : placeTypeFromText(
+          rawQuery
+        );
+
+  /*
+   * 搜尋多種文字版本。
+   *
+   * 例如：
+   * 台中車佔
+   * ↓
+   * 台中車站
+   * Taichung 台中車站
+   */
+  const queries =
+    unique([
+      rawQuery,
+
+      normalized
+        .normalizedQuery,
+
+      ...(normalized.aliases ||
+        []),
+
+      cityHint
+        ? `${cityHint} ${
+            normalized
+              .normalizedQuery ||
+            rawQuery
+          }`
+        : "",
+
+      cityHint
+        ? `${cityHint} ${rawQuery}`
+        : "",
+    ]);
+
+  console.log(
+    "[place search]",
+    {
+      rawQuery,
+
+      normalizedQuery:
+        normalized
+          .normalizedQuery,
+
+      aliases:
+        normalized.aliases,
+
+      cityHint,
+
+      placeType:
+        detectedPlaceType,
+
+      queries,
+    }
+  );
+
+  /*
+   * TomTom + Photon 都搜，
+   * 不再因為第一個 provider
+   * 有結果就直接相信。
+   */
+  const search =
+    await searchQueries({
+      queries,
+      tomtomApiKey,
+      nearLat,
+      nearLon,
+    });
+
+  if (
+    !search.candidates.length
+  ) {
+    const error =
+      new Error(
+        `無法解析地點：${rawQuery}。`
+      );
+
+    error.status = 404;
+    throw error;
+  }
+
+  /*
+   * 對所有候選重新評分。
+   */
+  const rankedCandidates =
+    search.candidates
+      .map(
+        (candidate) => ({
+          candidate,
+
+          score:
+            scoreCandidate(
+              candidate,
+              {
+                rawQuery,
+
+                normalizedQuery:
+                  normalized
+                    .normalizedQuery,
+
+                cityHint,
+
+                placeType:
+                  detectedPlaceType,
+              }
+            ),
+        })
+      )
+
+      /*
+       * -10000 表示明確城市衝突。
+       *
+       * 例如：
+       * 台中車站
+       * vs
+       * Taipei Main Station
+       */
+      .filter(
+        (item) =>
+          item.score >
+          -10000
+      )
+
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      );
+
+  /*
+   * 如果所有候選都跟明確城市衝突，
+   * 不可以偷偷拿錯城市導航。
+   */
+  if (
+    !rankedCandidates.length
+  ) {
+    const error =
+      new Error(
+        `搜尋結果與輸入地點不一致：${rawQuery}`
+      );
+
+    error.status = 404;
+    throw error;
+  }
+
+  const best =
+    rankedCandidates[0];
+
+  const result = {
+    ...best.candidate,
+
+    matchScore:
+      best.score,
+  };
+
+  const candidates =
+    rankedCandidates
+      .slice(0, 5)
+      .map(
+        (item) => ({
+          ...item.candidate,
+
+          matchScore:
+            item.score,
+        })
+      );
+
+  const resolvedCity =
+    inferCityHint(
+      result.city,
+      result.address,
+      result.displayName
+    );
+
+  return {
+    input:
+      rawQuery,
+
+    normalized: {
+      ...normalized,
+
+      cityHint,
+
+      placeType:
+        detectedPlaceType,
+    },
+
+    result,
+
+    candidates,
+
+    source:
+      result.source,
+
+    validation: {
+      accepted: true,
+
+      coordinatesGrounded:
+        Boolean(
+          result
+            .coordinatesGrounded
+        ),
+
+      aiGeneratedCoordinates:
+        false,
+
+      taiwanOnly:
+        validTaiwanCoordinate(
+          result.lat,
+          result.lon
+        ),
+
+      locationBiasUsed:
+        validTaiwanCoordinate(
+          Number(
+            nearLat
+          ),
+          Number(
+            nearLon
+          )
+        ),
+
+      cityHint,
+
+      resolvedCity,
+
+      matchScore:
+        best.score,
+    },
+  };
+}

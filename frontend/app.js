@@ -282,7 +282,7 @@ function riskSamples(route) {
 }
 
 function minRiskSamples(route) {
-  return Number(route?.riskMinRequiredUniqueDays || 8);
+  return Number(route?.riskMinRequiredUniqueDays || 4);
 }
 
 function historyCanPoll(route) {
@@ -333,7 +333,7 @@ function applyHistoricalRisk(route, risk) {
     Number(
       risk.minRequiredUniqueDays ||
       route.riskMinRequiredUniqueDays ||
-      8
+      4
     );
 
   route.riskDataSource =
@@ -346,6 +346,11 @@ function applyHistoricalRisk(route, risk) {
 
   route.worst5Min =
     risk.worst5Min ??
+    null;
+
+  route.likelyRangeMin =
+    risk.likelyRangeMin ??
+    route.likelyRangeMin ??
     null;
 
   route.variance =
@@ -730,6 +735,15 @@ async function fetchJson(url, options) {
 function extractGeocodeResult(payload) {
   const candidates = [
     payload?.result,
+
+    ...(
+      Array.isArray(
+        payload?.candidates
+      )
+        ? payload.candidates
+        : []
+    ),
+
     payload?.location,
     payload?.data?.result,
     payload?.data,
@@ -756,14 +770,50 @@ function extractGeocodeResult(payload) {
     );
 
     if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      /*
+       * DEMO_SAFE_SEARCH_UI_V1
+       *
+       * Preserve backend confidence semantics instead
+       * of throwing them away at the frontend boundary.
+       */
+      const validation =
+        payload?.validation ||
+        candidate?.validation ||
+        {};
+
       return {
         lat,
         lon,
+
         displayName:
           candidate?.displayName ||
           candidate?.name ||
           candidate?.address ||
           `${lat}, ${lon}`,
+
+        source:
+          candidate?.source ||
+          payload?.source ||
+          null,
+
+        confidence:
+          candidate?.confidence ||
+          validation?.confidence ||
+          null,
+
+        approximate:
+          Boolean(
+            candidate?.approximate ??
+            validation?.approximate ??
+            false
+          ),
+
+        needsReview:
+          Boolean(
+            candidate?.needsReview ??
+            validation?.needsReview ??
+            false
+          ),
       };
     }
   }
@@ -771,62 +821,214 @@ function extractGeocodeResult(payload) {
   return null;
 }
 
+function selectedPlaceForAddress(
+  address
+) {
+  const inputs = [
+    els.startInput,
+    els.endInput,
+    ...document.querySelectorAll(
+      ".waypointAddress"
+    ),
+  ].filter(Boolean);
+
+  for (
+    const input
+    of inputs
+  ) {
+    if (
+      input.value.trim() !==
+      address
+    ) {
+      continue;
+    }
+
+    const lat =
+      Number(
+        input.dataset.placeLat
+      );
+
+    const lon =
+      Number(
+        input.dataset.placeLon
+      );
+
+    if (
+      Number.isFinite(lat) &&
+      Number.isFinite(lon)
+    ) {
+      return {
+        lat,
+        lon,
+
+        displayName:
+          input.dataset.placeName ||
+          address,
+
+        source:
+          "Selected autocomplete result",
+
+        approximate:
+          false,
+      };
+    }
+  }
+
+  return null;
+}
+
+
 async function geocode(address) {
   if (address === "我的位置") {
     if (!myLocation) {
-      throw new Error("請先取得目前位置。");
+      throw new Error(
+        "請先取得目前位置。"
+      );
     }
 
     return {
       ...myLocation,
-      displayName: "我的位置",
+      displayName:
+        "我的位置",
     };
   }
 
-  const geocodeParams =
-    new URLSearchParams({
-      q: address,
-    });
 
   /*
-   * LOCAL_SEARCH_BIAS_V1
+   * If the user selected an autocomplete item,
+   * its grounded coordinates are already known.
    *
-   * If the user already shared their current location,
-   * use it only as a search bias.
-   *
-   * Example:
-   *   長江路一段220號
-   *
-   * can prefer the nearby road/address instead of
-   * an identically named road elsewhere in Taiwan.
+   * Do not geocode the same text again.
    */
+  const selected =
+    selectedPlaceForAddress(
+      address
+    );
+
+  if (selected) {
+    return selected;
+  }
+
+
+  const geocodeParams =
+    new URLSearchParams({
+      q:
+        address,
+    });
+
+
   if (
     myLocation &&
-    Number.isFinite(Number(myLocation.lat)) &&
-    Number.isFinite(Number(myLocation.lon))
+    Number.isFinite(
+      Number(myLocation.lat)
+    ) &&
+    Number.isFinite(
+      Number(myLocation.lon)
+    )
   ) {
     geocodeParams.set(
       "nearLat",
-      String(myLocation.lat)
+      String(
+        myLocation.lat
+      )
     );
 
     geocodeParams.set(
       "nearLon",
-      String(myLocation.lon)
+      String(
+        myLocation.lon
+      )
     );
   }
 
-  const payload = await fetchJson(
-    `${BACKEND_BASE_URL}/api/smart-geocode?${geocodeParams.toString()}`
-  );
 
-  const result = extractGeocodeResult(payload);
+  /*
+   * Stage 1:
+   * Full smart resolver.
+   */
+  try {
+    const payload =
+      await fetchJson(
+        `${BACKEND_BASE_URL}/api/smart-geocode?${geocodeParams.toString()}`
+      );
 
-  if (!result) {
-    throw new Error(`找不到地點：${address}`);
+    const result =
+      extractGeocodeResult(
+        payload
+      );
+
+    if (result) {
+      return result;
+    }
+  } catch {
+    /*
+     * Expected provider failures are recoverable.
+     * Fall through to best-effort suggestion search.
+     */
   }
 
-  return result;
+
+  /*
+   * Stage 2:
+   * Demo-safe best-effort fallback.
+   *
+   * place-suggest is allowed to return the closest
+   * grounded candidate even when an exact match
+   * is unavailable.
+   */
+  try {
+    const suggestParams =
+      new URLSearchParams(
+        geocodeParams
+      );
+
+    suggestParams.set(
+      "limit",
+      "1"
+    );
+
+    const payload =
+      await fetchJson(
+        `${BACKEND_BASE_URL}/api/place-suggest?${suggestParams.toString()}`
+      );
+
+    const suggestions =
+      Array.isArray(
+        payload?.suggestions
+      )
+        ? payload.suggestions
+        : [];
+
+    const fallback =
+      extractGeocodeResult({
+        candidates:
+          suggestions,
+      });
+
+    if (fallback) {
+      return {
+        ...fallback,
+
+        approximate:
+          true,
+      };
+    }
+  } catch {
+    /*
+     * Keep technical provider failures away
+     * from the normal presentation flow.
+     */
+  }
+
+
+  /*
+   * Never invent coordinates.
+   * This only happens when every grounded source
+   * has genuinely produced zero usable candidates.
+   */
+  throw new Error(
+    "目前沒有可用的地點候選"
+  );
 }
 
 function makeMarkerElement(kind, label) {
@@ -864,7 +1066,8 @@ function setEndMarker(point) {
 
 function useMyLocation() {
   if (!navigator.geolocation) {
-    setStatus("瀏覽器不支援定位功能。", "error");
+    /* DEMO_SAFE_CAPABILITY_UI_V1 */
+    setStatus("瀏覽器不支援定位功能。", "");
     return;
   }
 
@@ -888,8 +1091,16 @@ function useMyLocation() {
 
       setStatus("已取得目前位置。", "success");
     },
-    () => {
-      setStatus("無法取得位置，請確認瀏覽器定位權限。", "error");
+    (error) => {
+      console.warn(
+        "Geolocation failed:",
+        error
+      );
+
+      setStatus(
+        "無法取得位置，請確認瀏覽器定位權限。",
+        ""
+      );
     },
     {
       enableHighAccuracy: true,
@@ -905,7 +1116,7 @@ function startVoiceInput(targetId) {
     window.webkitSpeechRecognition;
 
   if (!SpeechRecognition) {
-    setStatus("此瀏覽器不支援語音輸入。", "error");
+    setStatus("此瀏覽器不支援語音輸入。", "");
     return;
   }
 
@@ -930,9 +1141,15 @@ function startVoiceInput(targetId) {
   };
 
   recognition.onerror = (event) => {
+    console.warn(
+      "Speech recognition failed:",
+      event?.error ||
+      event
+    );
+
     setStatus(
-      `語音輸入失敗：${event.error}`,
-      "error"
+      "語音輸入目前無法使用，請直接輸入文字。",
+      ""
     );
   };
 
@@ -1468,64 +1685,218 @@ function differenceFromFastest(route) {
   );
 }
 
-function routeStateChips(route) {
-  if (
-    isScooterRoute(route)
-  ) {
-    const hasTraffic =
-      Array.isArray(
-        route?.congestionSegments
-      ) &&
-      route.congestionSegments
-        .length > 0;
+/*
+ * RISK_AWARE_UI_V1
+ *
+ * Stability:
+ *   HIGH   CV <= 10%
+ *   MEDIUM CV <= 20%
+ *   LOW    CV > 20%
+ *
+ * Delay Risk:
+ *   LOW    P90 buffer <= 10% of Expected ETA
+ *   MEDIUM P90 buffer <= 25%
+ *   HIGH   P90 buffer > 25%
+ *
+ * These are transparent UI classifications,
+ * not probability claims.
+ */
+function liveCoverageRatio(route) {
+  const value = Number(
+    route?.combinedLiveCoverageRatio ??
+    route?.tdxCoverageRatio ??
+    0
+  );
 
+  return Number.isFinite(value)
+    ? value
+    : 0;
+}
+
+function riskRange(route) {
+  if (!riskReady(route)) return null;
+
+  const low = Number(
+    route?.likelyRangeMin?.low
+  );
+
+  const high = Number(
+    route?.likelyRangeMin?.high
+  );
+
+  if (
+    !Number.isFinite(low) ||
+    !Number.isFinite(high)
+  ) {
+    return null;
+  }
+
+  return { low, high };
+}
+
+function riskBufferMin(route) {
+  if (!riskReady(route)) return null;
+
+  const expected =
+    Number(route?.expectedMin);
+
+  const p90 =
+    Number(route?.worst10Min);
+
+  if (
+    !Number.isFinite(expected) ||
+    !Number.isFinite(p90)
+  ) {
+    return null;
+  }
+
+  return Math.max(
+    0,
+    p90 - expected
+  );
+}
+
+function stabilityInfo(route) {
+  if (!riskReady(route)) {
+    return {
+      label: "PENDING",
+      cv: null,
+    };
+  }
+
+  let cv =
+    Number(
+      route?.coefficientOfVariation
+    );
+
+  if (
+    !Number.isFinite(cv) &&
+    finite(route?.standardDeviationMin) &&
+    finite(route?.historicalMeanMin) &&
+    Number(route.historicalMeanMin) > 0
+  ) {
+    cv =
+      Number(route.standardDeviationMin) /
+      Number(route.historicalMeanMin);
+  }
+
+  if (!Number.isFinite(cv)) {
+    return {
+      label: "—",
+      cv: null,
+    };
+  }
+
+  if (cv > 1 && cv <= 100) {
+    cv = cv / 100;
+  }
+
+  const label =
+    cv <= 0.10
+      ? "HIGH"
+      : cv <= 0.20
+      ? "MEDIUM"
+      : "LOW";
+
+  return {
+    label,
+    cv,
+  };
+}
+
+function delayRiskInfo(route) {
+  const buffer =
+    riskBufferMin(route);
+
+  const expected =
+    Number(route?.expectedMin);
+
+  if (
+    buffer === null ||
+    !Number.isFinite(expected) ||
+    expected <= 0
+  ) {
+    return {
+      label: "PENDING",
+      ratio: null,
+    };
+  }
+
+  const ratio =
+    buffer / expected;
+
+  const label =
+    ratio <= 0.10
+      ? "LOW"
+      : ratio <= 0.25
+      ? "MEDIUM"
+      : "HIGH";
+
+  return {
+    label,
+    ratio,
+  };
+}
+
+function historyConfidence(route) {
+  const samples =
+    riskSamples(route);
+
+  if (!riskReady(route)) {
+    return "PREPARING";
+  }
+
+  if (samples >= 20) {
+    return "HIGH";
+  }
+
+  if (samples >= 8) {
+    return "MODERATE";
+  }
+
+  return "EARLY";
+}
+
+function routeStateChips(route) {
+  if (isScooterRoute(route)) {
     return `
-      <span class="state-chip good">
-        Scooter route
-      </span>
-      <span class="state-chip ${
-        hasTraffic
-          ? "good"
-          : "warn"
-      }">
-        ${
-          hasTraffic
-            ? "Live congestion"
-            : "Live traffic pending"
-        }
+      <span class="state-chip">
+        Scooter baseline
       </span>
     `;
   }
 
   const coverage =
-    Number(
-      route
-        ?.combinedLiveCoverageRatio ??
-      route?.tdxCoverageRatio ??
-      0
-    );
+    liveCoverageRatio(route);
 
-  const liveClass =
-    coverage > 0
-      ? "good"
-      : "";
+  const histCoverage =
+    historicalCoverage(route);
 
   const historyClass =
     riskReady(route)
       ? "good"
       : "warn";
 
-  const historyText =
-    riskReady(route)
-      ? "Historical ready"
-      : historyPreparing(route)
-      ? `Preparing ${riskSamples(route)}/${minRiskSamples(route)}`
-      : `History ${riskSamples(route)}/${minRiskSamples(route)}`;
+  let historyText;
+
+  if (riskReady(route)) {
+    historyText =
+      histCoverage === null
+        ? `History · ${riskSamples(route)} samples`
+        : `History ${pct(histCoverage)} · ${riskSamples(route)} samples`;
+  } else if (historyPreparing(route)) {
+    historyText =
+      `Preparing ${riskSamples(route)}/${minRiskSamples(route)}`;
+  } else {
+    historyText =
+      `History ${riskSamples(route)}/${minRiskSamples(route)}`;
+  }
 
   return `
-    <span class="state-chip ${liveClass}">
+    <span class="state-chip ${coverage > 0 ? "good" : ""}">
       Live data ${pct(coverage)}
     </span>
+
     <span class="state-chip ${historyClass}">
       ${esc(historyText)}
     </span>
@@ -1683,6 +2054,11 @@ function renderRecommendation() {
 }
 
 function renderRouteCards() {
+  /*
+   * FRONTEND_RISK_CARD_V3
+   * Main route cards expose the full Risk-Aware
+   * comparison without inventing unavailable values.
+   */
   if (!latestRoutes.length) {
     renderEmptyState();
     return;
@@ -1697,59 +2073,136 @@ function renderRouteCards() {
         const badge =
           routeBadge(route, index);
 
+        const ready =
+          riskReady(route);
+
         const p90 =
           reliableEta(route);
 
-        const delta =
-          differenceFromFastest(route);
+        const range =
+          riskRange(route);
 
-        const insightA =
-          scooter
-            ? `
-              <div class="insight">
-                <span>Model</span>
-                <strong>Motor scooter</strong>
-              </div>
-            `
-            : p90 !== null
-            ? `
-              <div class="insight">
-                <span>Reliable ETA</span>
-                <strong>${fmt(p90)} min</strong>
-              </div>
-            `
-            : `
-              <div class="insight">
-                <span>${historyPreparing(route) ? "Reliability" : "History"}</span>
-                <strong>${
-                  historyPreparing(route)
-                    ? `Preparing ${riskSamples(route)}/${minRiskSamples(route)}`
-                    : `${riskSamples(route)}/${minRiskSamples(route)} days`
-                }</strong>
-              </div>
-            `;
+        const buffer =
+          riskBufferMin(route);
 
-        const insightB =
-          `
-            <div class="insight">
-              <span>vs Fastest</span>
-              <strong>${
-                delta !== null &&
-                delta > 0.05
-                  ? `+${fmt(delta)} min`
-                  : "Fastest"
-              }</strong>
-            </div>
-          `;
+        const stability =
+          stabilityInfo(route);
+
+        const delayRisk =
+          delayRiskInfo(route);
+
+        const confidence =
+          historyConfidence(route);
+
+        const samples =
+          riskSamples(route);
+
+        const progress =
+          `${samples}/${minRiskSamples(route)}`;
+
+        const reliableValue =
+          ready && p90 !== null
+            ? `${fmt(p90)} min`
+            : `Preparing ${progress}`;
+
+        const bufferValue =
+          ready &&
+          buffer !== null
+            ? `+${fmt(buffer)} min`
+            : "—";
+
+        const stabilityValue =
+          ready
+            ? `${
+                stability.label
+              }${
+                stability.cv !== null
+                  ? ` · CV ${fmt(stability.cv * 100, 1)}%`
+                  : ""
+              }`
+            : "Preparing";
+
+        const delayRiskValue =
+          ready
+            ? delayRisk.label
+            : "Preparing";
+
+        const rangeValue =
+          ready && range
+            ? `${fmt(range.low)}–${fmt(range.high)} min`
+            : "Preparing";
+
+        const confidenceValue =
+          ready
+            ? `${confidence} · ${samples} samples`
+            : `PREPARING · ${progress}`;
 
         const note =
           scooter
-            ? "Scooter V1 is isolated from car history and car calibration."
-            : riskReady(route)
-            ? "Reliable ETA uses empirical historical P90."
-            : historyPreparing(route)
-            ? "Historical reliability is updating automatically in the background."
-            : "Reliability waits for enough empirical history.";
+            ? "Scooter mode currently uses its own routing baseline."
+            : ready
+            ? "Expected ETA is the current prediction. P90, range and stability use empirical historical observations."
+            : `Historical risk data is preparing (${progress}).`;
+
+        if (scooter) {
+          return `
+            <article
+              class="route-card ${
+                index === selectedRouteIndex
+                  ? "selected"
+                  : ""
+              }"
+              data-route-index="${index}"
+            >
+              <div class="route-card-top">
+                <div class="route-card-title">
+                  ${esc(route.label)}
+                </div>
+
+                <span class="route-card-badge ${badge.className}">
+                  ${badge.text}
+                </span>
+              </div>
+
+              <div class="route-card-main">
+                <div class="route-time">
+                  <strong>${fmt(route.expectedMin)}</strong>
+                  <span>MIN EXPECTED ETA</span>
+                </div>
+
+                <div class="route-distance">
+                  ${fmt(route.distanceKm, 2)} km
+                </div>
+              </div>
+
+              <div class="route-insights">
+                <div class="insight">
+                  <span>Model</span>
+                  <strong>Motor Scooter</strong>
+                </div>
+
+                <div class="insight">
+                  <span>Historical Risk</span>
+                  <strong>Not available</strong>
+                </div>
+              </div>
+
+              <div class="route-card-footer">
+                <span class="route-card-note">
+                  ${esc(note)}
+                </span>
+
+                <button
+                  class="details-button"
+                  type="button"
+                  data-details-index="${index}"
+                >
+                  Details →
+                </button>
+              </div>
+            </article>
+          `;
+        }
 
         return `
           <article
@@ -1773,7 +2226,7 @@ function renderRouteCards() {
             <div class="route-card-main">
               <div class="route-time">
                 <strong>${fmt(route.expectedMin)}</strong>
-                <span>MIN EXPECTED</span>
+                <span>MIN EXPECTED ETA</span>
               </div>
 
               <div class="route-distance">
@@ -1782,8 +2235,37 @@ function renderRouteCards() {
             </div>
 
             <div class="route-insights">
-              ${insightA}
-              ${insightB}
+
+              <div class="insight">
+                <span>Reliable ETA (P90)</span>
+                <strong>${reliableValue}</strong>
+              </div>
+
+              <div class="insight">
+                <span>Risk Buffer</span>
+                <strong>${bufferValue}</strong>
+              </div>
+
+              <div class="insight">
+                <span>Stability</span>
+                <strong>${stabilityValue}</strong>
+              </div>
+
+              <div class="insight">
+                <span>Delay Risk</span>
+                <strong>${delayRiskValue}</strong>
+              </div>
+
+              <div class="insight">
+                <span>Historical Range (P10–P90)</span>
+                <strong>${rangeValue}</strong>
+              </div>
+
+              <div class="insight">
+                <span>Data Confidence</span>
+                <strong>${confidenceValue}</strong>
+              </div>
+
             </div>
 
             <div class="state-row">
@@ -1809,9 +2291,7 @@ function renderRouteCards() {
       .join("");
 
   els.routeList
-    .querySelectorAll(
-      ".route-card"
-    )
+    .querySelectorAll(".route-card")
     .forEach((card) => {
       card.addEventListener(
         "click",
@@ -1834,22 +2314,18 @@ function renderRouteCards() {
     });
 
   els.routeList
-    .querySelectorAll(
-      ".details-button"
-    )
+    .querySelectorAll(".details-button")
     .forEach((button) => {
       button.addEventListener(
         "click",
         (event) => {
           event.stopPropagation();
 
-          const index =
+          openDetails(
             Number(
-              button.dataset
-                .detailsIndex
-            );
-
-          openDetails(index);
+              button.dataset.detailsIndex
+            )
+          );
         }
       );
     });
@@ -2140,11 +2616,11 @@ function openDetails(index) {
 
       <div class="detail-grid">
         ${detailsRow(
-          "Worst 10% · P90",
+          "Reliable ETA · P90",
           p90
         )}
         ${detailsRow(
-          "Worst 5% · P95",
+          "High-delay threshold · P95",
           p95
         )}
         ${detailsRow(
@@ -2253,7 +2729,7 @@ async function calculateRoute() {
     ) {
       setStatus(
         "請輸入起點與目的地。",
-        "error"
+        ""
       );
       return;
     }
@@ -2364,11 +2840,31 @@ async function calculateRoute() {
 
     startHistoryPolling();
   } catch (error) {
-    console.error(error);
+    /*
+     * DEMO_SAFE_SEARCH_UI_V1
+     *
+     * Technical details stay in diagnostics.
+     * Expected provider/search/routing failures should
+     * not surface as a red technical error to the user.
+     */
+    console.error(
+      "Route planning failed:",
+      error
+    );
+
+    const message =
+      String(
+        error?.message ||
+        ""
+      ).includes(
+        "目前沒有可用的地點候選"
+      )
+        ? "目前找不到可用的地點，請換一個名稱或完整地址再試一次。"
+        : "目前無法完成路線規劃，請稍後再試或調整起點與目的地。";
 
     setStatus(
-      `規劃失敗：${error.message}`,
-      "error"
+      message,
+      ""
     );
   }
 }
@@ -2387,7 +2883,7 @@ async function calculateMultiModalRoute() {
     ) {
       setStatus(
         "請輸入起點與目的地。",
-        "error"
+        ""
       );
       return;
     }
@@ -2486,9 +2982,31 @@ async function calculateMultiModalRoute() {
     );
 
   } catch (error) {
+    /*
+     * DEMO_SAFE_MULTIMODAL_UI_V1
+     *
+     * Keep technical diagnostics in the console,
+     * but do not expose provider/backend details
+     * as a red user-facing error.
+     */
+    console.error(
+      "Multi-modal route planning failed:",
+      error
+    );
+
+    const message =
+      String(
+        error?.message ||
+        ""
+      ).includes(
+        "目前沒有可用的地點候選"
+      )
+        ? "目前找不到可用的地點，請換一個名稱或完整地址再試一次。"
+        : "目前無法完成多段路線規劃，請稍後再試或調整地點。";
+
     setStatus(
-      `多段路線失敗：${error.message}`,
-      "error"
+      message,
+      ""
     );
   }
 }
@@ -3011,6 +3529,22 @@ checkBackend();
       let controller =
         null;
 
+      /*
+       * IME / stale-request protection.
+       *
+       * isComposing:
+       *   Do not search while Zhuyin/Pinyin/IME is still composing.
+       *
+       * requestSeq:
+       *   Even if an aborted request finishes late, it cannot replace
+       *   results from a newer query.
+       */
+      let isComposing =
+        false;
+
+      let requestSeq =
+        0;
+
       let items =
         [];
 
@@ -3270,11 +3804,23 @@ checkBackend();
 
 
       async function searchNow() {
+        if (
+          isComposing
+        ) {
+          return;
+        }
+
+
         const query =
           input.value.trim();
 
 
         if (!query) {
+          controller?.abort();
+
+          requestSeq +=
+            1;
+
           close();
           return;
         }
@@ -3282,8 +3828,17 @@ checkBackend();
 
         controller?.abort();
 
+
+        const seq =
+          ++requestSeq;
+
+
         controller =
           new AbortController();
+
+
+        const requestController =
+          controller;
 
 
         menu.replaceChildren();
@@ -3325,7 +3880,7 @@ checkBackend();
               `/api/place-suggest?${params.toString()}`,
               {
                 signal:
-                  controller.signal,
+                  requestController.signal,
               }
             );
 
@@ -3346,8 +3901,11 @@ checkBackend();
            * Ignore stale request result.
            */
           if (
+            seq !==
+              requestSeq ||
+            isComposing ||
             input.value.trim() !==
-            query
+              query
           ) {
             return;
           }
@@ -3372,6 +3930,51 @@ checkBackend();
           close();
         }
       }
+
+
+      input.addEventListener(
+        "compositionstart",
+        () => {
+          isComposing =
+            true;
+
+          clearTimeout(
+            timer
+          );
+
+          controller?.abort();
+
+          requestSeq +=
+            1;
+
+          close();
+        }
+      );
+
+
+      input.addEventListener(
+        "compositionend",
+        () => {
+          isComposing =
+            false;
+
+          clearTimeout(
+            timer
+          );
+
+          if (
+            isComposing
+          ) {
+            return;
+          }
+
+          timer =
+            setTimeout(
+              searchNow,
+              400
+            );
+        }
+      );
 
 
       input.addEventListener(
@@ -3401,6 +4004,14 @@ checkBackend();
       input.addEventListener(
         "keydown",
         event => {
+          if (
+            event.isComposing ||
+            isComposing
+          ) {
+            return;
+          }
+
+
           if (
             menu.hidden
           ) {

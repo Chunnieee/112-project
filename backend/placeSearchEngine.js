@@ -1467,6 +1467,64 @@ function candidateLooksLikeStreet(candidate) {
   return /\b(?:highway|street|road)\b/.test(haystack);
 }
 
+/*
+ * PROVIDER_EXACT_NAME_QUERY_EVIDENCE_V1
+ *
+ * Strong ranking evidence exists when:
+ *
+ * - provider returned a grounded candidate
+ * - one actual provider query exactly equals the
+ *   candidate canonical display name
+ * - semantic type also matches
+ *
+ * This is not coordinate generation and does not
+ * hard-code any place.
+ */
+function providerExactNameQueryEvidence(
+  candidate,
+  expectedType
+) {
+  if (
+    !candidate ||
+    !candidateTypeMatches(
+      candidate,
+      expectedType
+    )
+  ) {
+    return false;
+  }
+
+  const candidateName =
+    normalizeComparable(
+      candidate.displayName
+    );
+
+  if (!candidateName) {
+    return false;
+  }
+
+  const matchedQueries = [
+    ...(Array.isArray(
+      candidate.matchedQueries
+    )
+      ? candidate.matchedQueries
+      : []),
+
+    candidate.matchedQuery,
+  ]
+    .map(
+      normalizeComparable
+    )
+    .filter(Boolean);
+
+  return matchedQueries.some(
+    (query) =>
+      query ===
+      candidateName
+  );
+}
+
+
 function scoreCandidate(
   candidate,
   {
@@ -1494,7 +1552,14 @@ function scoreCandidate(
       cityHintStrength
     );
 
-  score += cityConsistency.adjustment;
+  /*
+   * ENTITY_FIRST_CITY_BALANCE_V1
+   *
+   * City evidence is applied after entity-name/type
+   * evidence is known.
+   */
+  let effectiveCityAdjustment =
+    cityConsistency.adjustment;
 
   const queryText =
     normalizeComparable(
@@ -1539,11 +1604,16 @@ function scoreCandidate(
   const candidateName =
     normalizeComparable(candidate?.displayName);
 
+  let entityNameSimilarity = 0;
+
   if (queryText && candidateName) {
     const similarity = Math.max(
       nameSimilarity(queryText, candidateName),
       nameSimilarity(stripCityMentions(queryText), candidateName)
     );
+
+    entityNameSimilarity =
+      similarity;
 
     if (similarity === 1) {
       score += 40;
@@ -1551,6 +1621,91 @@ function scoreCandidate(
 
     score += Math.round(similarity * 40);
   }
+
+  /*
+   * ENTITY_FIRST_CITY_BALANCE_V1
+   *
+   * Example:
+   *   "台北市 板橋車站"
+   *
+   * "臺北車站" matches the requested city but is the
+   * wrong entity.
+   *
+   * "板橋車站" conflicts with the requested city but
+   * is the strongly matching grounded entity.
+   *
+   * Explicit city remains important, but cannot by
+   * itself overpower strong entity identity.
+   *
+   * Address searches are intentionally excluded:
+   * address providers may return a nearby but different
+   * house and require stricter city semantics.
+   */
+  const entityFirstCityEligible =
+    Boolean(placeType) &&
+    ![
+      "address",
+      "coordinate",
+      "district",
+      "unknown",
+    ].includes(placeType);
+
+  const strongEntityIdentity =
+    entityFirstCityEligible &&
+    candidateTypeMatches(
+      candidate,
+      placeType
+    ) &&
+    (
+      entityNameSimilarity >= 0.72 ||
+      providerExactNameQueryEvidence(
+        candidate,
+        placeType
+      )
+    );
+
+  if (
+    cityHintStrength === "explicit" &&
+    entityFirstCityEligible
+  ) {
+    /*
+     * Same city but weak entity identity:
+     * city alone must not turn another station/place
+     * into the winner.
+     */
+    if (
+      cityConsistency.status === "match" &&
+      !strongEntityIdentity
+    ) {
+      effectiveCityAdjustment =
+        Math.min(
+          effectiveCityAdjustment,
+          25
+        );
+    }
+
+    /*
+     * Strong entity identity but explicit-city conflict:
+     * keep a penalty, but don't let it erase the
+     * grounded entity match.
+     *
+     * Final validation will still mark needsReview=true.
+     */
+    if (
+      cityConsistency.status === "conflict" &&
+      strongEntityIdentity
+    ) {
+      effectiveCityAdjustment =
+        Math.max(
+          effectiveCityAdjustment,
+          -15
+        );
+    }
+  }
+
+  score +=
+    effectiveCityAdjustment;
+
 
   score += proximityBonus(candidate, nearLat, nearLon);
 
@@ -1562,6 +1717,28 @@ function scoreCandidate(
   ) {
     score += 30;
   }
+
+  /*
+   * PROVIDER_QUERY_RANKING_V1
+   *
+   * This is stronger than substring similarity:
+   * the provider actually returned this grounded entity
+   * for a query variant whose canonical text exactly
+   * matches the candidate name.
+   *
+   * 85 is intentionally strong enough to beat a child
+   * POI whose name merely contains the requested name,
+   * while explicit city conflicts can still dominate.
+   */
+  if (
+    providerExactNameQueryEvidence(
+      candidate,
+      placeType
+    )
+  ) {
+    score += 85;
+  }
+
 
   /*
    * 查的是學校 / 餐廳 / 飯店 / 景點 / 車站等具體地點，
@@ -4377,6 +4554,18 @@ async function searchPhoton({
               props?.osm_value ||
               "place",
 
+            /*
+             * PHOTON_QUERY_EVIDENCE_V1
+             *
+             * Preserve the exact user/provider query
+             * that produced this grounded candidate.
+             *
+             * This is provenance evidence, not an AI
+             * generated alias or coordinate.
+             */
+            matchedQuery:
+              query,
+
             rawTypes: [
               props?.osm_key,
               props?.osm_value,
@@ -4691,24 +4880,126 @@ async function searchTdxAddressV3({
 
 
 function dedupeCandidates(items) {
-  const seen = new Set();
-  const result = [];
+  /*
+   * PROVIDER_QUERY_RANKING_V1
+   *
+   * The same grounded place may be returned for several
+   * query variants:
+   *
+   *   國立臺灣美術館
+   *   國立台灣美術館
+   *   National Taiwan Museum of Fine Arts
+   *
+   * Previously the first coordinate won and later query
+   * provenance was discarded.
+   *
+   * Keep the first candidate metadata, but merge the
+   * grounded query provenance and raw provider types.
+   */
+  const byCoordinate =
+    new Map();
+
+  const mergeTextValues = (values) =>
+    [
+      ...new Set(
+        values
+          .map(clean)
+          .filter(Boolean)
+      ),
+    ];
 
   for (const item of items) {
-    const key =
-      `${Number(item.lat).toFixed(5)},` +
-      `${Number(item.lon).toFixed(5)}`;
-
-    if (seen.has(key)) {
+    if (!item) {
       continue;
     }
 
-    seen.add(key);
-    result.push(item);
+    const lat =
+      Number(item.lat);
+
+    const lon =
+      Number(item.lon);
+
+    const key =
+      `${lat.toFixed(5)},` +
+      `${lon.toFixed(5)}`;
+
+    const incomingQueries =
+      mergeTextValues([
+        ...(Array.isArray(
+          item.matchedQueries
+        )
+          ? item.matchedQueries
+          : []),
+
+        item.matchedQuery,
+      ]);
+
+    const incomingTypes =
+      mergeTextValues(
+        Array.isArray(
+          item.rawTypes
+        )
+          ? item.rawTypes
+          : []
+      );
+
+    if (!byCoordinate.has(key)) {
+      const first = {
+        ...item,
+
+        matchedQueries:
+          incomingQueries,
+
+        rawTypes:
+          incomingTypes,
+      };
+
+      if (
+        !first.matchedQuery &&
+        incomingQueries.length
+      ) {
+        first.matchedQuery =
+          incomingQueries[0];
+      }
+
+      byCoordinate.set(
+        key,
+        first
+      );
+
+      continue;
+    }
+
+    const existing =
+      byCoordinate.get(key);
+
+    existing.matchedQueries =
+      mergeTextValues([
+        ...(existing
+          .matchedQueries ||
+          []),
+
+        existing
+          .matchedQuery,
+
+        ...incomingQueries,
+      ]);
+
+    existing.rawTypes =
+      mergeTextValues([
+        ...(existing
+          .rawTypes ||
+          []),
+
+        ...incomingTypes,
+      ]);
   }
 
-  return result;
+  return [
+    ...byCoordinate.values(),
+  ];
 }
+
 
 const PHOTON_MAX_QUERIES = Math.max(
   1,
@@ -5073,18 +5364,346 @@ async function searchNominatimFallback({
 }
 
 
+
+/*
+ * PHOTON_STAGE_CONFIDENCE_V1
+ *
+ * This is an early-stop decision only.
+ * It does NOT delete weak candidates.
+ * Weak candidates remain available for the
+ * final best-effort fallback.
+ */
+function candidateBatchHasStrongCandidate(
+  candidates,
+  {
+    rawQuery,
+    normalizedQuery,
+    cityHint,
+    cityHintStrength,
+    placeType,
+    nearLat,
+    nearLon,
+  }
+) {
+  const ranked =
+    dedupeCandidates(
+      candidates || []
+    )
+      .map((candidate) => {
+        const cityConsistency =
+          evaluateCityConsistency(
+            candidate,
+            cityHint,
+            cityHintStrength
+          );
+
+        const score =
+          scoreCandidate(
+            candidate,
+            {
+              rawQuery,
+              normalizedQuery,
+              cityHint,
+              cityHintStrength,
+              placeType,
+              nearLat,
+              nearLon,
+            }
+          );
+
+        return {
+          candidate,
+          cityConsistency,
+          score,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  if (!ranked.length) {
+    return false;
+  }
+
+  const best = ranked[0];
+  const second =
+    ranked[1] || null;
+
+  /*
+   * Explicit city conflict:
+   * don't stop searching yet.
+   *
+   * Important:
+   * candidate is NOT discarded.
+   */
+  if (
+    cityHint &&
+    cityHintStrength === "explicit" &&
+    best.cityConsistency.status ===
+      "conflict"
+  ) {
+    return false;
+  }
+
+  /*
+   * Strongly typed query:
+   * wrong type cannot stop provider expansion.
+   */
+  const stronglyTyped =
+    new Set([
+      "station",
+      "restaurant",
+      "hotel",
+      "attraction",
+      "museum",
+      "port",
+      "school",
+    ]);
+
+  if (
+    stronglyTyped.has(placeType) &&
+    !candidateTypeMatches(
+      best.candidate,
+      placeType
+    )
+  ) {
+    return false;
+  }
+
+  const queryText =
+    normalizeComparable(
+      normalizedQuery ||
+      rawQuery
+    );
+
+  const nameText =
+    normalizeComparable(
+      best.candidate
+        ?.displayName
+    );
+
+  const fullText =
+    normalizeComparable(
+      [
+        best.candidate
+          ?.displayName,
+        best.candidate
+          ?.address,
+      ].join(" ")
+    );
+
+  const similarity =
+    queryText &&
+    nameText
+      ? Math.max(
+          nameSimilarity(
+            queryText,
+            nameText
+          ),
+          nameSimilarity(
+            stripCityMentions(
+              queryText
+            ),
+            nameText
+          )
+        )
+      : 0;
+
+  /*
+   * PHOTON_MULTILINGUAL_GROUNDED_MATCH_V1
+   *
+   * Photon/OSM frequently returns an English canonical
+   * name for a Chinese query.
+   *
+   * Example:
+   *   query: 高雄市立美術館
+   *   OSM:   Kaohsiung Museum of Fine Arts
+   *
+   * Do not ask AI to assert that they are the same
+   * entity. Instead use provider provenance:
+   *
+   *   exact provider query
+   * + top-ranked Photon result
+   * + correct semantic type
+   * + no explicit-city conflict
+   * + grounded coordinates.
+   *
+   * Address is excluded because address geocoders may
+   * return a nearby but different house while still
+   * reporting the original query as matchedQuery.
+   */
+  const matchedQueryText =
+    normalizeComparable(
+      best.candidate
+        ?.matchedQuery
+    );
+
+  const rawQueryText =
+    normalizeComparable(
+      rawQuery
+    );
+
+  const normalizedQueryText =
+    normalizeComparable(
+      normalizedQuery
+    );
+
+  const sourceText =
+    String(
+      best.candidate
+        ?.source ||
+      ""
+    ).toLowerCase();
+
+  const providerRank =
+    Number(
+      best.candidate
+        ?.providerRank
+    );
+
+  const photonExactQueryEvidence =
+    sourceText.includes(
+      "photon"
+    ) &&
+    placeType !== "address" &&
+    placeType !== "unknown" &&
+    placeType !== "district" &&
+    placeType !== "coordinate" &&
+    Boolean(
+      matchedQueryText &&
+      (
+        matchedQueryText ===
+          rawQueryText ||
+        matchedQueryText ===
+          normalizedQueryText
+      )
+    ) &&
+    candidateTypeMatches(
+      best.candidate,
+      placeType
+    ) &&
+    Boolean(
+      best.candidate
+        ?.coordinatesGrounded
+    ) &&
+    Number.isFinite(
+      providerRank
+    ) &&
+    providerRank === 0;
+
+  /*
+   * PHOTON_GROUNDED_IDENTITY_CONFIDENCE_V2
+   *
+   * Cross-language POIs can have a very low textual
+   * score even when Photon has strong grounded identity
+   * evidence.
+   *
+   * Example:
+   *   query: 奇美博物館
+   *   OSM:   Chimei Museum
+   *
+   * Keep the existing >=120 path, but also allow a
+   * lower-score result when:
+   *
+   * - Photon returned it as rank 0
+   * - exact provider-query provenance exists
+   * - semantic type matches
+   * - no explicit-city conflict exists
+   * - competing same-type candidates are absent or
+   *   clearly behind
+   *
+   * This avoids lowering the global confidence
+   * threshold for unrelated candidates.
+   */
+  const secondMatchesExpectedType =
+    Boolean(
+      second &&
+      candidateTypeMatches(
+        second.candidate,
+        placeType
+      )
+    );
+
+  const providerIdentitySeparated =
+    !secondMatchesExpectedType ||
+    (
+      second &&
+      best.score -
+        second.score >= 12
+    );
+
+  if (
+    photonExactQueryEvidence &&
+    (
+      best.score >= 120 ||
+      providerIdentitySeparated
+    )
+  ) {
+    return true;
+  }
+
+
+  const strongTextMatch =
+    Boolean(
+      queryText &&
+      fullText &&
+      fullText.includes(
+        queryText
+      )
+    ) ||
+    similarity >= 0.72;
+
+  if (!strongTextMatch) {
+    return false;
+  }
+
+  /*
+   * This is NOT final acceptance.
+   * It only means:
+   * "Photon already found something strong enough,
+   * don't waste more alias requests."
+   */
+  if (best.score < 120) {
+    return false;
+  }
+
+  const margin =
+    second
+      ? best.score -
+        second.score
+      : Infinity;
+
+  return (
+    margin >= 12 ||
+    best.score >= 170
+  );
+}
+
+
 async function searchQueries({
   queries,
   nearLat,
   nearLon,
+
+  rawQuery = "",
+  normalizedQuery = "",
+  cityHint = "",
+  cityHintStrength = "ai",
+  placeType = "unknown",
 }) {
   const found = [];
   const errors = [];
+
+  let attemptedQueries = 0;
+  let stoppedEarly = false;
 
   for (
     const query of
     unique(queries)
   ) {
+    attemptedQueries += 1;
+
     try {
       const items =
         await searchPhoton({
@@ -5096,6 +5715,31 @@ async function searchQueries({
       found.push(
         ...items
       );
+
+      if (
+        candidateBatchHasStrongCandidate(
+          found,
+          {
+            rawQuery:
+              rawQuery ||
+              query,
+
+            normalizedQuery:
+              normalizedQuery ||
+              rawQuery ||
+              query,
+
+            cityHint,
+            cityHintStrength,
+            placeType,
+            nearLat,
+            nearLon,
+          }
+        )
+      ) {
+        stoppedEarly = true;
+        break;
+      }
     } catch (error) {
       const message =
         String(
@@ -5107,16 +5751,11 @@ async function searchQueries({
         message
       );
 
-      console.log(
-        "Photon search unavailable:",
+      console.warn(
+        "[Photon unavailable]",
         message
       );
 
-      /*
-       * Once the Photon circuit is open,
-       * don't repeat the same doomed request
-       * for every alias.
-       */
       if (
         /circuit open/i.test(
           message
@@ -5134,7 +5773,134 @@ async function searchQueries({
       ),
 
     errors,
+
+    attemptedQueries,
+    stoppedEarly,
   };
+}
+
+
+/*
+ * PLACE_PROVIDER_POLICY_V1
+ *
+ * This registry controls WHICH grounded provider is
+ * appropriate for each semantic place type.
+ *
+ * It does NOT hard-code any place or coordinates.
+ * Coordinates must still come from grounded providers.
+ */
+const PLACE_PROVIDER_POLICY = Object.freeze({
+  station: Object.freeze({
+    photon: true,
+    tdxStation: true,
+    tdxAddress: false,
+    tdxTourism: false,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  address: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: true,
+    tdxTourism: false,
+    tdxPort: false,
+    nominatim: true,
+  }),
+
+  port: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: false,
+    tdxPort: true,
+    nominatim: false,
+  }),
+
+  restaurant: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: true,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  hotel: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: true,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  attraction: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: true,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  museum: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: true,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  poi: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: true,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  school: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: false,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  district: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: false,
+    tdxPort: false,
+    nominatim: false,
+  }),
+
+  unknown: Object.freeze({
+    photon: true,
+    tdxStation: false,
+    tdxAddress: false,
+    tdxTourism: true,
+    tdxPort: false,
+    nominatim: false,
+  }),
+});
+
+
+function providerPolicyFor(
+  placeType
+) {
+  return (
+    PLACE_PROVIDER_POLICY[
+      placeType
+    ] ||
+    PLACE_PROVIDER_POLICY
+      .unknown
+  );
 }
 
 const TDX_CITY_RULES = [
@@ -5596,6 +6362,15 @@ export async function resolvePlaceUniversal({
       resolvedCacheKey
     );
 
+  /*
+   * RESOLVED_CACHE_CONFIDENCE_V1
+   *
+   * A cached coordinate is grounded, but it is not
+   * automatically assumed to still be a good match.
+   *
+   * Old approximate / incorrect results must not
+   * permanently bypass the current resolver.
+   */
   if (
     cachedResolved?.result &&
     validTaiwanCoordinate(
@@ -5607,8 +6382,219 @@ export async function resolvePlaceUniversal({
       ...cachedResolved.result,
     };
 
-    console.log(
-      "[place resolved cache] HIT",
+    /*
+     * Validate cache without another Groq request.
+     * Raw query parsing is enough to reject obviously
+     * stale or semantically weak cache entries.
+     */
+    const cacheCityInfo =
+      resolveCityHintInfo({
+        rawQuery,
+        normalizedQuery:
+          rawQuery,
+        aiCityHint: "",
+      });
+
+    const cachePlaceType =
+      placeTypeFromText(
+        rawQuery
+      );
+
+    const cacheContext = {
+      rawQuery,
+
+      normalizedQuery:
+        rawQuery,
+
+      cityHint:
+        cacheCityInfo.cityHint,
+
+      cityHintStrength:
+        cacheCityInfo.strength,
+
+      placeType:
+        cachePlaceType,
+
+      nearLat,
+      nearLon,
+    };
+
+    const cacheStrong =
+      candidateBatchHasStrongCandidate(
+        [cachedResult],
+        cacheContext
+      );
+
+    if (cacheStrong) {
+      const cacheCityConsistency =
+        evaluateCityConsistency(
+          cachedResult,
+          cacheCityInfo.cityHint,
+          cacheCityInfo.strength
+        );
+
+      const cacheScore =
+        scoreCandidate(
+          cachedResult,
+          cacheContext
+        );
+
+      const cacheCityEvidence =
+        candidateCityEvidence(
+          cachedResult
+        );
+
+      console.log(
+        "[place resolved cache] HIT",
+        {
+          query:
+            rawQuery,
+
+          displayName:
+            cachedResult
+              .displayName,
+
+          source:
+            cachedResult.source,
+
+          confidence:
+            "high",
+        }
+      );
+
+      return {
+        input:
+          rawQuery,
+
+        normalized:
+          cachedResolved.normalized || {
+            normalizedQuery:
+              rawQuery,
+
+            aliases: [],
+
+            cityHint:
+              cacheCityInfo.cityHint,
+
+            cityHintSource:
+              cacheCityInfo.source ||
+              "cache",
+
+            cityHintStrength:
+              cacheCityInfo.strength ||
+              "cache",
+
+            placeType:
+              cachePlaceType,
+
+            confidence: 1,
+
+            reason:
+              "Validated grounded resolved-place cache",
+          },
+
+        result: {
+          ...cachedResult,
+
+          matchScore:
+            cacheScore,
+
+          cityConsistency:
+            cacheCityConsistency,
+
+          confidence:
+            "high",
+
+          approximate:
+            false,
+        },
+
+        candidates: [
+          {
+            ...cachedResult,
+
+            matchScore:
+              cacheScore,
+
+            cityConsistency:
+              cacheCityConsistency,
+
+            confidence:
+              "high",
+
+            approximate:
+              false,
+          },
+        ],
+
+        source:
+          cachedResult.source,
+
+        validation: {
+          accepted: true,
+
+          confidence:
+            "high",
+
+          approximate:
+            false,
+
+          needsReview:
+            false,
+
+          coordinatesGrounded:
+            true,
+
+          aiGeneratedCoordinates:
+            false,
+
+          taiwanOnly:
+            true,
+
+          locationBiasUsed:
+            validTaiwanCoordinate(
+              Number(nearLat),
+              Number(nearLon)
+            ),
+
+          cityHint:
+            cacheCityInfo.cityHint,
+
+          cityHintSource:
+            cacheCityInfo.source ||
+            "cache",
+
+          cityHintStrength:
+            cacheCityInfo.strength ||
+            "cache",
+
+          resolvedCity:
+            cacheCityEvidence
+              .cities[0] ||
+            "",
+
+          resolvedCities:
+            cacheCityEvidence
+              .cities,
+
+          cityConsistency:
+            cacheCityConsistency,
+
+          matchScore:
+            cacheScore,
+
+          resolvedPlaceCacheHit:
+            true,
+        },
+      };
+    }
+
+    /*
+     * Weak cache is ignored, not returned.
+     * Continue through the current provider pipeline.
+     */
+    console.warn(
+      "[place resolved cache] REJECTED_WEAK",
       {
         query:
           rawQuery,
@@ -5621,69 +6607,6 @@ export async function resolvePlaceUniversal({
           cachedResult.source,
       }
     );
-
-    return {
-      input:
-        rawQuery,
-
-      normalized:
-        cachedResolved.normalized || {
-          normalizedQuery:
-            rawQuery,
-
-          aliases: [],
-
-          cityHint: "",
-
-          cityHintSource:
-            "cache",
-
-          cityHintStrength:
-            "cache",
-
-          placeType:
-            cachedResult
-              .locationType ||
-            "poi",
-
-          confidence: 1,
-
-          reason:
-            "Previously grounded resolved-place cache",
-        },
-
-      result:
-        cachedResult,
-
-      candidates: [
-        cachedResult,
-      ],
-
-      source:
-        cachedResult.source,
-
-      validation: {
-        accepted: true,
-
-        coordinatesGrounded:
-          true,
-
-        aiGeneratedCoordinates:
-          false,
-
-        taiwanOnly:
-          true,
-
-        locationBiasUsed:
-          validTaiwanCoordinate(
-            Number(nearLat),
-            Number(nearLon)
-          ),
-
-        resolvedPlaceCacheHit:
-          true,
-      },
-    };
   }
 
 
@@ -5971,19 +6894,56 @@ export async function resolvePlaceUniversal({
    * A Photon outage must NOT make all station
    * searches fail.
    */
-  const [
+  let [
     photonSearch,
     tdxStationSearch,
   ] =
     await Promise.all([
-      searchQueries({
+      (
+        providerPolicyFor(
+          detectedPlaceType
+        ).tdxAddress ||
+        providerPolicyFor(
+          detectedPlaceType
+        ).tdxStation
+      )
+        ? Promise.resolve({
+            candidates: [],
+            errors: [],
+            attemptedQueries: 0,
+            stoppedEarly: false,
+            skippedForAuthoritativeProvider:
+              providerPolicyFor(
+                detectedPlaceType
+              ).tdxStation
+                ? "station"
+                : "address",
+          })
+        : searchQueries({
         queries,
         nearLat,
         nearLon,
+
+        rawQuery,
+
+        normalizedQuery:
+          normalized
+            .normalizedQuery,
+
+        cityHint,
+
+        cityHintStrength:
+          cityHintInfo
+            .strength,
+
+        placeType:
+          detectedPlaceType,
       }),
 
-      detectedPlaceType === "station"
-        ? searchTdxStationCandidates({
+      providerPolicyFor(
+          detectedPlaceType
+        ).tdxStation
+          ? searchTdxStationCandidates({
             queries,
             cityHint,
           })
@@ -5992,6 +6952,94 @@ export async function resolvePlaceUniversal({
             errors: [],
           }),
     ]);
+
+
+
+  /*
+   * STATION_AUTHORITATIVE_FIRST_V1
+   *
+   * Production provider order:
+   *
+   *   TDX Station
+   *       ↓
+   * confidence evaluation
+   *       ↓
+   * strong → stop
+   * weak / missing → Photon fallback
+   *
+   * No station coordinates are hard-coded here.
+   */
+  if (
+    providerPolicyFor(
+      detectedPlaceType
+    ).tdxStation
+  ) {
+    const tdxStationStrong =
+      candidateBatchHasStrongCandidate(
+        tdxStationSearch
+          .candidates,
+        {
+          rawQuery,
+
+          normalizedQuery:
+            normalized
+              .normalizedQuery,
+
+          cityHint,
+
+          cityHintStrength:
+            cityHintInfo
+              .strength,
+
+          placeType:
+            detectedPlaceType,
+
+          nearLat,
+          nearLon,
+        }
+      );
+
+    if (!tdxStationStrong) {
+      const photonStationFallback =
+        await searchQueries({
+          queries,
+          nearLat,
+          nearLon,
+
+          rawQuery,
+
+          normalizedQuery:
+            normalized
+              .normalizedQuery,
+
+          cityHint,
+
+          cityHintStrength:
+            cityHintInfo
+              .strength,
+
+          placeType:
+            detectedPlaceType,
+        });
+
+      photonSearch = {
+        ...photonStationFallback,
+
+        stationFallback:
+          true,
+      };
+    } else {
+      photonSearch = {
+        ...photonSearch,
+
+        stationFallback:
+          false,
+
+        skippedBecauseTdxStrong:
+          true,
+      };
+    }
+  }
 
 
   /*
@@ -6085,13 +7133,57 @@ export async function resolvePlaceUniversal({
    * This is independent of Photon, therefore a Photon
    * outage must not take down POI search.
    */
+  /*
+   * GENERAL_POI_FALLBACK_V1
+   *
+   * Production provider order for general places:
+   *
+   *   Photon
+   *      ↓
+   * confidence evaluation
+   *      ↓
+   * strong → stop
+   * weak / missing → TDX Tourism fallback
+   *
+   * This controls provider execution only.
+   * It never hard-codes place coordinates.
+   */
+  const tourismPolicyEnabled =
+    providerPolicyFor(
+      detectedPlaceType
+    ).tdxTourism;
+
+  const photonStrongForTourism =
+    tourismPolicyEnabled &&
+    candidateBatchHasStrongCandidate(
+      photonSearch
+        ?.candidates ||
+        [],
+      {
+        rawQuery,
+
+        normalizedQuery:
+          normalized
+            .normalizedQuery,
+
+        cityHint,
+
+        cityHintStrength:
+          cityHintInfo
+            .strength,
+
+        placeType:
+          detectedPlaceType,
+
+        nearLat,
+        nearLon,
+      }
+    );
+
+
   const tdxTourismSearch =
-    (
-      detectedPlaceType !==
-        "station" &&
-      detectedPlaceType !==
-        "address"
-    )
+    tourismPolicyEnabled &&
+    !photonStrongForTourism
       ? await searchTdxTourismCandidates({
           queries,
           placeType:
@@ -6103,6 +7195,19 @@ export async function resolvePlaceUniversal({
           available: false,
           successfulQueries: 0,
         };
+
+  if (
+    tourismPolicyEnabled &&
+    photonStrongForTourism
+  ) {
+    tdxTourismSearch.skipped =
+      true;
+
+    tdxTourismSearch.skipReason =
+      "photon-high-confidence";
+  }
+
+
 
 
   if (
@@ -6147,9 +7252,17 @@ export async function resolvePlaceUniversal({
 
 
   const tdxPortSearch =
-    await searchTdxPortCandidates({
-      queries,
-    });
+    providerPolicyFor(
+      detectedPlaceType
+    ).tdxPort
+      ? await searchTdxPortCandidates({
+          queries,
+        })
+      : {
+          candidates: [],
+          errors: [],
+          available: false,
+        };
 
 
   if (
@@ -6286,6 +7399,164 @@ export async function resolvePlaceUniversal({
   }
 
 
+
+  /*
+   * ADDRESS_CONFIDENCE_GATE_V1
+   *
+   * An authoritative provider result is grounded,
+   * but that does not automatically mean it matches
+   * the requested street / section / house number.
+   *
+   * Weak candidates remain available as fallback,
+   * but do not stop provider expansion.
+   */
+  let addressBestStrong =
+    providerPolicyFor(
+      detectedPlaceType
+    ).tdxAddress
+      ? candidateBatchHasStrongCandidate(
+          search.candidates,
+          {
+            rawQuery,
+
+            normalizedQuery:
+              normalized
+                .normalizedQuery,
+
+            cityHint,
+
+            cityHintStrength:
+              cityHintInfo
+                .strength,
+
+            placeType:
+              detectedPlaceType,
+
+            nearLat,
+            nearLon,
+          }
+        )
+      : false;
+
+
+  /*
+   * ADDRESS_PHOTON_FALLBACK_V1
+   *
+   * Production provider order for addresses:
+   *
+   *   1. TDX Address
+   *   2. Photon
+   *   3. Nominatim
+   *
+   * Photon is intentionally deferred until the
+   * authoritative TDX address provider has failed
+   * to produce a grounded candidate.
+   */
+  if (
+    providerPolicyFor(
+      detectedPlaceType
+    ).tdxAddress &&
+    !addressBestStrong
+  ) {
+    const photonAddressFallback =
+      await searchQueries({
+        queries,
+        nearLat,
+        nearLon,
+
+        rawQuery,
+
+        normalizedQuery:
+          normalized
+            .normalizedQuery,
+
+        cityHint,
+
+        cityHintStrength:
+          cityHintInfo
+            .strength,
+
+        placeType:
+          detectedPlaceType,
+      });
+
+    if (
+      photonAddressFallback
+        .candidates
+        .length
+    ) {
+      search.candidates =
+        dedupeCandidates([
+          ...photonAddressFallback
+            .candidates,
+
+          ...search.candidates,
+        ]);
+    }
+
+    search.errors.push(
+      ...photonAddressFallback
+        .errors
+    );
+
+    search.providers
+      .photonCandidates =
+        (
+          search.providers
+            .photonCandidates ||
+          0
+        ) +
+        photonAddressFallback
+          .candidates
+          .length;
+
+    search.providers
+      .photonAddressFallback =
+        true;
+
+    search.providers
+      .photonAddressAttemptedQueries =
+        photonAddressFallback
+          .attemptedQueries ||
+        0;
+
+    search.providers
+      .photonAddressStoppedEarly =
+        Boolean(
+          photonAddressFallback
+            .stoppedEarly
+        );
+
+    /*
+     * Re-evaluate the merged TDX + Photon pool.
+     */
+    addressBestStrong =
+      candidateBatchHasStrongCandidate(
+        search.candidates,
+        {
+          rawQuery,
+
+          normalizedQuery:
+            normalized
+              .normalizedQuery,
+
+          cityHint,
+
+          cityHintStrength:
+            cityHintInfo
+              .strength,
+
+          placeType:
+            detectedPlaceType,
+
+          nearLat,
+          nearLon,
+        }
+      );
+
+  }
+
+
   /*
    * NOMINATIM_ADDRESS_HOOK_V4B
    *
@@ -6299,7 +7570,7 @@ export async function resolvePlaceUniversal({
   if (
     detectedPlaceType ===
       "address" &&
-    !search.candidates.length
+    !addressBestStrong
   ) {
     const nominatimFallback =
       await searchNominatimFallback({
@@ -6538,6 +7809,49 @@ export async function resolvePlaceUniversal({
   const best =
     rankedCandidates[0];
 
+
+  /*
+   * FINAL_RESULT_CONFIDENCE_V1
+   *
+   * accepted=true means there is a real grounded
+   * coordinate available for navigation.
+   *
+   * It does NOT necessarily mean the textual match
+   * is exact.
+   */
+  const bestIsStrong =
+    candidateBatchHasStrongCandidate(
+      [best.candidate],
+      {
+        rawQuery,
+
+        normalizedQuery:
+          normalized
+            .normalizedQuery,
+
+        cityHint,
+
+        cityHintStrength:
+          cityHintInfo
+            .strength,
+
+        placeType:
+          detectedPlaceType,
+
+        nearLat,
+        nearLon,
+      }
+    );
+
+  const approximate =
+    !bestIsStrong;
+
+  const confidenceLevel =
+    bestIsStrong
+      ? "high"
+      : "low";
+
+
   const result = {
     ...best.candidate,
 
@@ -6546,7 +7860,13 @@ export async function resolvePlaceUniversal({
 
     cityConsistency:
       best.cityConsistency,
+
+    approximate,
+
+    confidence:
+      confidenceLevel,
   };
+
 
   /*
    * Persist only a successful grounded winner.
@@ -6556,11 +7876,14 @@ export async function resolvePlaceUniversal({
    * do not make that mistake persistent.
    */
   if (
-    cityHintInfo.strength !==
-      "explicit" ||
-    best.cityConsistency
-      .status !==
-      "conflict"
+    bestIsStrong &&
+    (
+      cityHintInfo.strength !==
+        "explicit" ||
+      best.cityConsistency
+        .status !==
+        "conflict"
+    )
   ) {
     await setResolvedPlaceCache(
       resolvedCacheKey,
@@ -6643,6 +7966,11 @@ export async function resolvePlaceUniversal({
     validation: {
       accepted: true,
 
+      confidence:
+        confidenceLevel,
+
+      approximate,
+
       coordinatesGrounded:
         Boolean(
           result
@@ -6684,8 +8012,25 @@ export async function resolvePlaceUniversal({
       cityConsistency:
         best.cityConsistency,
 
+      /*
+       * EXPLICIT_CITY_REVIEW_ONLY_V1
+       *
+       * AI city hints are advisory ranking signals only.
+       * A disagreement with an AI-inferred city must not
+       * make an otherwise high-confidence grounded result
+       * look suspicious to the user.
+       *
+       * Review is required only when:
+       * - the final result itself is approximate, or
+       * - the user explicitly supplied a city and the
+       *   grounded winner conflicts with it.
+       */
       needsReview:
-        best.cityConsistency.status === "conflict",
+        approximate ||
+        (
+          cityHintInfo.strength === "explicit" &&
+          best.cityConsistency.status === "conflict"
+        ),
 
       matchScore:
         best.score,

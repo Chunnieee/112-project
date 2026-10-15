@@ -2683,7 +2683,14 @@ async function loadCityLivePackages(cities) {
     // Network-resilience timeout only. This never changes ETA values.
     // One unsupported/slow jurisdiction cannot erase already-usable
     // city traffic from the other jurisdictions on the route.
-    perScopeTimeoutMs: 5500,
+    perScopeTimeoutMs:
+      Math.max(
+        7000,
+        Math.min(
+          30000,
+          Number(process.env.TDX_CITY_SCOPE_TIMEOUT_MS) || 20000
+        )
+      ),
     logger: console,
   });
 
@@ -4051,6 +4058,13 @@ app.get("/api/route", async (req, res) => {
     const eLon = Number(endLon);
     const eLat = Number(endLat);
 
+    console.log("[route request coordinates]", {
+      startLon: sLon,
+      startLat: sLat,
+      endLon: eLon,
+      endLat: eLat,
+    });
+
     if (![sLon, sLat, eLon, eLat].every(Number.isFinite)) {
       return res.status(400).json({ error: "Invalid coordinate format" });
     }
@@ -4240,8 +4254,13 @@ try {
       loadCityLivePackages(
         cities
       ),
-      Math.max(7000, Math.min(60000,
-        Number(process.env.TDX_CITY_TIMEOUT_MS) || 7000)),
+      Math.max(
+        10000,
+        Math.min(
+          60000,
+          Number(process.env.TDX_CITY_TIMEOUT_MS) || 25000
+        )
+      ),
       "TDX city traffic"
     );
 } catch (error) {
@@ -4286,6 +4305,134 @@ try {
       usableObservedSectionCount: pkg.observedSections?.length || 0,
       evidenceQualityCounts: pkg.evidenceQualityCounts || null,
     })));
+    {
+      let total = 0;
+      let forwardAligned = 0;
+      let reverseAligned = 0;
+      let neitherAligned = 0;
+      const examples = [];
+
+      console.log(
+        "[TDX CITY RAW BEARING SAMPLE]",
+        cityPackages
+          .flatMap(pkg =>
+            (pkg.observedSections || [])
+              .filter(section =>
+                section.vdStaticBearing !== null &&
+                section.vdStaticBearing !== undefined
+              )
+              .slice(0, 12)
+              .map(section => ({
+                sectionId: section.sectionId,
+                sectionName: section.sectionName || null,
+                vdStaticBearing: section.vdStaticBearing,
+                vdStaticBearingType: typeof section.vdStaticBearing,
+                vdRoadDirection: section.vdRoadDirection ?? null,
+              }))
+          )
+          .slice(0, 12)
+      );
+
+      for (const pkg of cityPackages) {
+        for (const section of pkg.observedSections || []) {
+          const rawTarget =
+            section.vdStaticBearing;
+
+          const compassBearing = {
+            N: 0,
+            NE: 45,
+            E: 90,
+            SE: 135,
+            S: 180,
+            SW: 225,
+            W: 270,
+            NW: 315,
+          };
+
+          const numericTarget =
+            Number(rawTarget);
+
+          const target =
+            Number.isFinite(numericTarget) &&
+            String(rawTarget).trim() !== ""
+              ? numericTarget
+              : compassBearing[
+                  String(rawTarget || "")
+                    .trim()
+                    .toUpperCase()
+                ];
+
+          if (!Number.isFinite(target)) continue;
+
+          for (const line of section.polylines || []) {
+            if (!Array.isArray(line) || line.length < 2) continue;
+
+            const rawBearing =
+              bearingDeg(
+                line[0],
+                line[line.length - 1]
+              );
+
+            if (!Number.isFinite(rawBearing)) continue;
+
+            const forwardDiff =
+              angleDiffDeg(rawBearing, target);
+
+            const reverseDiff =
+              angleDiffDeg(
+                ((rawBearing + 180) % 360),
+                target
+              );
+
+            total += 1;
+
+            let classification = "neither";
+
+            if (forwardDiff <= 35) {
+              forwardAligned += 1;
+              classification = "forward";
+            } else if (reverseDiff <= 35) {
+              reverseAligned += 1;
+              classification = "reverse";
+            } else {
+              neitherAligned += 1;
+            }
+
+            if (
+              examples.length < 12 &&
+              classification !== "forward"
+            ) {
+              examples.push({
+                city: pkg.city,
+                sectionId: section.sectionId,
+                sectionName: section.sectionName || null,
+                rawBearing: Number(rawBearing.toFixed(1)),
+                vdStaticBearing: target,
+                forwardDiff: Number(forwardDiff.toFixed(1)),
+                reverseDiff: Number(reverseDiff.toFixed(1)),
+                classification,
+              });
+            }
+          }
+        }
+      }
+
+      console.log(
+        "[TDX CITY DIRECTION AUDIT]",
+        {
+          total,
+          forwardAligned,
+          reverseAligned,
+          neitherAligned,
+          reversePct:
+            total
+              ? Number((reverseAligned / total * 100).toFixed(1))
+              : 0,
+          examples,
+        }
+      );
+    }
+
     const cityIndex =
       buildObservedSegmentIndex(
         cityPackages
@@ -4375,13 +4522,25 @@ try {
   await Promise.allSettled([
     promiseWithTimeout(
       getFreewayLiveTraffic(),
-      6000,
+      Math.max(
+        10000,
+        Math.min(
+          60000,
+          Number(process.env.TDX_ROAD_LIVE_TIMEOUT_MS) || 20000
+        )
+      ),
       "TDX Freeway LiveTraffic"
     ),
 
     promiseWithTimeout(
       getHighwayLiveTraffic(),
-      6000,
+      Math.max(
+        10000,
+        Math.min(
+          60000,
+          Number(process.env.TDX_ROAD_LIVE_TIMEOUT_MS) || 20000
+        )
+      ),
       "TDX Highway LiveTraffic"
     ),
   ]);
@@ -4940,6 +5099,23 @@ const signalCorrection =
         );
 
 
+      const rejectionTotals =
+        uncoveredForAudit.reduce(
+          (totals, item) => {
+            for (const [reason, count] of Object.entries(
+              item?.rejectionCounts || {}
+            )) {
+              totals[reason] =
+                (totals[reason] || 0) +
+                Number(count || 0);
+            }
+
+            return totals;
+          },
+          {}
+        );
+
+
       console.log(
         "[eta uncovered audit]",
         {
@@ -4982,6 +5158,8 @@ const signalCorrection =
             baseRouterMin > 0
               ? Number((uncoveredBaselineMin / baseRouterMin * 100).toFixed(1))
               : 0,
+
+          rejectionTotals,
 
           roads:
             uncoveredForAudit

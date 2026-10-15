@@ -52,3 +52,9 @@ backend/data/
 **/*.before-*
 **/*before-*
 **/*zero-coverage-backup*
+
+# Local debug / sensitive capture
+backend/*.har
+backend/__pycache__/
+
+valhalla/data/valhalla_tiles/
