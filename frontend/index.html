@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<<<<<<< HEAD
   <meta name="theme-color" content="#0F1412" />
   <title>SafeFlow 智慧導航</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.10.0/dist/maplibre-gl.css" />
@@ -3098,5 +3099,109 @@ api('/api/health', { timeout: 6000 }).then(() => { state.apiOnline = true; }).ca
   document.addEventListener('keydown',function(e){ if(e.key==='Escape') toggle(false); });
 })();
 </script>
+=======
+  <title>安心導航 Risk-Aware Navigation</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap"
+  />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css?v=51" />
+</head>
+
+<body>
+  <aside id="controlPanel" aria-label="路線規劃">
+
+    <header class="panelHeader">
+      <div class="brand">
+        <span class="brandLamp" aria-hidden="true"></span>
+        <h1>安心導航</h1>
+      </div>
+      <button class="textBtn" type="button" onclick="resetPlanner()">清除</button>
+    </header>
+
+    <!-- 起點 / 終點 -->
+    <div class="placeBox">
+      <div class="placeRow">
+        <span class="placeDot placeDot--start" aria-hidden="true"></span>
+        <label class="srOnly" for="startInput">起點</label>
+        <input id="startInput" type="text" placeholder="從哪裡出發？" autocomplete="off" />
+        <button class="iconBtn" type="button" onclick="startVoiceInput('startInput')" aria-label="用語音輸入起點" title="語音輸入">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.08A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z"/></svg>
+        </button>
+      </div>
+
+      <div id="waypointList"></div>
+
+      <div class="placeRow placeRow--end">
+        <span class="placeDot placeDot--end" aria-hidden="true"></span>
+        <label class="srOnly" for="endInput">終點</label>
+        <input id="endInput" type="text" placeholder="要去哪裡？" autocomplete="off" />
+        <button class="iconBtn" type="button" onclick="startVoiceInput('endInput')" aria-label="用語音輸入終點" title="語音輸入">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.08A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z"/></svg>
+        </button>
+      </div>
+
+      <button class="swapBtn" type="button" onclick="swapPlaces()" aria-label="交換起點和終點" title="交換起點和終點">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v13.6l-2.3-2.3-1.4 1.4L8 21.4l4.7-4.7-1.4-1.4L9 17.6V4H7Zm10 16V6.4l2.3 2.3 1.4-1.4L16 2.6l-4.7 4.7 1.4 1.4L15 6.4V20h2Z"/></svg>
+      </button>
+    </div>
+
+    <div class="quickLinks">
+      <button class="linkBtn" type="button" onclick="useMyLocation()">使用目前位置</button>
+      <button class="linkBtn" type="button" onclick="addWaypoint()">新增中途點</button>
+    </div>
+
+    <!-- 交通工具 -->
+    <div class="modeChips" role="radiogroup" aria-label="交通工具">
+      <button type="button" class="modeChip" data-mode="walk" role="radio" aria-checked="true">🚶 步行</button>
+      <button type="button" class="modeChip" data-mode="drive" role="radio" aria-checked="false">🚗 開車</button>
+      <button type="button" class="modeChip" data-mode="mrt" role="radio" aria-checked="false">🚇 捷運</button>
+      <button type="button" class="modeChip" data-mode="bus" role="radio" aria-checked="false">🚌 公車</button>
+      <button type="button" class="modeChip" data-mode="train" role="radio" aria-checked="false">🚆 台鐵</button>
+      <button type="button" class="modeChip" data-mode="hsr" role="radio" aria-checked="false">🚄 高鐵</button>
+    </div>
+
+    <!-- Hidden: app.js still reads this value -->
+    <select id="endMode" hidden>
+      <option value="walk" selected>步行</option>
+      <option value="drive">開車</option>
+      <option value="mrt">捷運</option>
+      <option value="bus">公車</option>
+      <option value="train">台鐵</option>
+      <option value="hsr">高鐵</option>
+    </select>
+
+    <button id="planBtn" class="primaryBtn" type="button" onclick="planRoute()">規劃路線</button>
+
+    <div id="status" role="status" aria-live="polite">
+      輸入起點和終點，系統會比較幾條路線，推薦兼顧時間與安全的一條。
+    </div>
+
+    <div id="recommendationBox"></div>
+    <div id="routeList"></div>
+
+    <details class="advanced">
+      <summary>進階功能</summary>
+      <div class="advancedBody">
+        <p>開車風險分析會用 TDX 即時與歷史路況，估計最壞情況要多久。</p>
+        <button class="secondaryBtn" type="button" onclick="runRiskAnalysis()">開車風險分析</button>
+        <p class="fine">
+          安全分數：路燈 30%、便利商店 30%、事故 40%。<br />
+          推薦分數：安全 50%、時間 30%、距離 20%。
+        </p>
+      </div>
+    </details>
+  </aside>
+
+  <main id="map" aria-label="地圖"></main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js?v=53"></script>
+  <script src="safetyMode.js?v=3"></script>
+>>>>>>> 5523ff10dd0f8d31d6e5fc9014333c92026a66ae
 </body>
 </html>

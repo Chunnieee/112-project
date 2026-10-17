@@ -7,7 +7,11 @@ import { createAuthRouter } from "./authStore.js";
 import { createNavigationRouter } from "./navigationFeatures.js";
 import { createMapTilesRouter } from "./googleTiles.js";
 import { assessHistoricalRisk } from "./riskEngine.js";
+<<<<<<< HEAD
 import { assessAndRecordUncoveredPriorV9 } from "./uncoveredPriorV9.js";
+=======
+import { registerSafetyRoutes } from "./safeRouteModel.js";
+>>>>>>> 5523ff10dd0f8d31d6e5fc9014333c92026a66ae
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
 import { loadRouteVdObservations } from "./tdxVdRouteEngine.js";
 import {
@@ -805,6 +809,9 @@ app.post("/api/history-status", async (req, res) => {
     });
   }
 });
+
+// 安全模式 Safety Mode (reads TablePlus SQLite database)
+registerSafetyRoutes(app, { osrmBaseUrl: OSRM_BASE_URL, fetchWithTimeout });
 
 app.get("/api/health", (req, res) => {
   res.json({
