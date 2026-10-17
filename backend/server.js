@@ -3,7 +3,9 @@ import {
   createRouteHash,
 } from "./historicalDb.js";
 import express from "express";
+import { createAuthRouter } from "./authStore.js";
 import { createNavigationRouter } from "./navigationFeatures.js";
+import { createMapTilesRouter } from "./googleTiles.js";
 import { assessHistoricalRisk } from "./riskEngine.js";
 import { assessAndRecordUncoveredPriorV9 } from "./uncoveredPriorV9.js";
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
@@ -645,7 +647,10 @@ const limiter = rateLimit({
   },
 });
 
+// 地圖圖磚請求很多，放在限流之前
+app.use("/api/map", createMapTilesRouter());
 app.use("/api", limiter);
+app.use("/api/auth", createAuthRouter());
 app.use('/api/navigation', createNavigationRouter());
 
 /*

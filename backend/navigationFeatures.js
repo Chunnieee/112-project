@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import routeLab from '../frontend/route-lab/engine.js';
 import { getValhallaRoutes } from './valhallaClient.js';
+import { getTomTomCarRoutes, hasTomTomKey, departAtFromClock } from './tomtomCarRoutes.js';
 import { createChoiceStore, hash, routeKey, journeyKey } from './routeChoiceStore.js';
 import { NavigationSimulation } from './navigationSimulation.js';
 
@@ -110,14 +111,22 @@ export function createNavigationRouter({ store, scoreRoutes, now = Date.now } = 
   router.get('/route', async (req,res,next) => {
     try {
       const mode = req.query.mode;
-      if (!['walk','scooter'].includes(mode)) throw error('交通方式不正確。');
+      if (!['walk','scooter','car'].includes(mode)) throw error('交通方式不正確。');
       const coord = Object.fromEntries(['startLon','startLat','endLon','endLat'].map(k => [k, Number(req.query[k])]));
       if (Object.values(coord).some(n => !Number.isFinite(n)) ||
           ['startLat','endLat'].some(k => Math.abs(coord[k]) > 85) ||
           ['startLon','endLon'].some(k => Math.abs(coord[k]) > 180)) throw error('請提供有效的起終點座標。');
       let routes;
-      try { routes = await getValhallaRoutes({ ...coord, costing: mode === 'walk' ? 'pedestrian' : 'motor_scooter' }); }
+      /* 汽車：優先用 TomTom 即時／歷史路況；失敗才退回本機 Valhalla（路網估算、無路況） */
+      if (mode === 'car' && hasTomTomKey()) {
+        try {
+          const tt = await getTomTomCarRoutes({ ...coord, departAt: departAtFromClock(req.query.departureTime) });
+          if (tt.length) return res.json({ routes: tt.slice(0, 5).map(r => ({ ...r, transportMode: 'car' })), trafficSource: 'TomTom' });
+        } catch (e) { console.warn('[car route] TomTom failed, falling back to Valhalla:', e.message); }
+      }
+      try { routes = await getValhallaRoutes({ ...coord, costing: mode === 'walk' ? 'pedestrian' : mode === 'car' ? 'auto' : 'motor_scooter' }); }
       catch (e) {
+        if (mode === 'car') throw error('汽車路由服務無法連線，請確認本機 Valhalla 已啟動。', 503);
         if (mode !== 'walk') throw error('機車路由服務無法連線，請啟動支援 motor_scooter 的 Valhalla 服務。', 503);
         const base = process.env.OSRM_FOOT_BASE_URL || 'https://routing.openstreetmap.de/routed-foot';
         const response = await fetch(`${base}/route/v1/foot/${coord.startLon},${coord.startLat};${coord.endLon},${coord.endLat}?overview=full&geometries=geojson&steps=true&alternatives=true`, { signal: AbortSignal.timeout(12000) });
@@ -127,7 +136,7 @@ export function createNavigationRouter({ store, scoreRoutes, now = Date.now } = 
       }
       res.json({ routes: routes.slice(0,5).map(r => ({ ...r, transportMode: mode,
         expectedMin: r.duration / 60, distanceKm: r.distance / 1000,
-        riskStatus: 'not-applicable', worst10Min: null, congestionSegments: [] })) });
+        riskStatus: mode === 'car' ? 'unavailable' : 'not-applicable', worst10Min: null, congestionSegments: [] })), trafficSource: mode === 'car' ? 'none' : undefined });
     } catch(e) { next(e); }
   });
   const snapshot = (plan, participant) => {

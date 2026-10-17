@@ -124,9 +124,9 @@ export function accidentDistanceWeight(distanceMeters, bufferRadius) {
 }
 
 /** Sum of accidentDistanceWeight over points already matched by findPointsNearRoute. */
-export function weightedCount(matchedPoints, bufferRadius) {
+export function weightedCount(matchedPoints, bufferRadius, timeWeight = null) {
   let sum = 0;
-  for (const p of matchedPoints) sum += accidentDistanceWeight(p.distanceMeters, bufferRadius);
+  for (const p of matchedPoints) sum += accidentDistanceWeight(p.distanceMeters, bufferRadius) * (timeWeight ? timeWeight(p) : 1);
   return sum;
 }
 

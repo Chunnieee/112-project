@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0F1412" />
+<title>SafeFlow 智慧導航 — 歡迎</title>
+<script src="session.js"></script>
+<script>
+  /* 首次進入的分流：已登入/訪客 → 首頁；看過介紹 → 登入；其他 → 功能介紹 */
+  (function () {
+    var S = window.SafeFlowSession;
+    var wantsAuth = location.hash === "#auth";
+    var wantsIntro = location.hash === "#intro";
+    if (S.get() && !wantsAuth && !wantsIntro) { location.replace(S.HOME_PAGE); return; }
+    document.documentElement.dataset.stage = wantsIntro ? "intro" : (wantsAuth || S.hasOnboarded()) ? "auth" : "intro";
+  })();
+</script>
+<style>
+  /* ===== SafeFlow palette =====
+   Light「鼠尾草霧灰」 sage-mist paper, forest green, mustard accent
+   Dark 「墨綠古金」   ink green-black, antique gold, moss          */
+:root{
+  color-scheme:light;
+  --bg:#ECEDE8; --bg-deep:#DADDD5; --surface:#F8F8F4; --surface-2:#E3E5DE; --surface-3:#D8DCD2;
+  --line:#CDD1C8; --line-2:#B7BEB3; --text:#1E2420; --text-2:#3B443E; --muted:#6B736C;
+  --primary:#2F6B4F; --primary-strong:#255A41; --primary-soft:#DCE8DF; --on-primary:#F8F8F4; --primary-text:#2F6B4F;
+  --accent:#E3B341; --nav-bg:#1C211E; --nav-fg:#9AA39B; --nav-on:#E3B341;
+  --low:#3E8257; --low-bg:#DDEBDF; --low-line:#B5D2BC;
+  --mid:#B07714; --mid-bg:#F4E8CB; --mid-line:#E2C98C;
+  --high:#B5483B; --high-bg:#F4DCD7; --high-line:#E2B3AB;
+  --route-a:#2F6B4F; --route-b:#C98A1B; --route-c:#5B7FA6; --route-d:#8A6FA0;
+  --pt-light:#C9961E; --route-casing:#1E2420; --scrim:rgba(28,33,30,.55);
+  --shadow-rgb:30 36 32; --shadow-k:.45;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0F1412; --bg-deep:#090C0B; --surface:#18201D; --surface-2:#222C27; --surface-3:#2A3530;
+  --line:#2F3B35; --line-2:#3E4B44; --text:#ECE6D6; --text-2:#CFC9B8; --muted:#8E968C;
+  --primary:#C2A66B; --primary-strong:#A88D55; --primary-soft:#2A2A20; --on-primary:#17150F; --primary-text:#D4BC86;
+  --accent:#C2A66B; --nav-bg:#0B0F0D; --nav-fg:#7F887F; --nav-on:#C2A66B;
+  --low:#7FA88A; --low-bg:#1B2A21; --low-line:#34503E;
+  --mid:#D1A55A; --mid-bg:#2D2517; --mid-line:#5A4826;
+  --high:#C7695B; --high-bg:#2F1A17; --high-line:#5C302A;
+  --route-a:#C2A66B; --route-b:#7FA88A; --route-c:#8FA3B8; --route-d:#B48A8A;
+  --pt-light:#E0C27A; --route-casing:#060A08; --scrim:rgba(4,6,5,.74);
+  --shadow-rgb:0 0 0; --shadow-k:1;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0F1412; --bg-deep:#090C0B; --surface:#18201D; --surface-2:#222C27; --surface-3:#2A3530;
+    --line:#2F3B35; --line-2:#3E4B44; --text:#ECE6D6; --text-2:#CFC9B8; --muted:#8E968C;
+    --primary:#C2A66B; --primary-strong:#A88D55; --primary-soft:#2A2A20; --on-primary:#17150F; --primary-text:#D4BC86;
+    --accent:#C2A66B; --nav-bg:#0B0F0D; --nav-fg:#7F887F; --nav-on:#C2A66B;
+    --low:#7FA88A; --low-bg:#1B2A21; --low-line:#34503E;
+    --mid:#D1A55A; --mid-bg:#2D2517; --mid-line:#5A4826;
+    --high:#C7695B; --high-bg:#2F1A17; --high-line:#5C302A;
+    --route-a:#C2A66B; --route-b:#7FA88A; --route-c:#8FA3B8; --route-d:#B48A8A;
+    --pt-light:#E0C27A; --route-casing:#060A08; --scrim:rgba(4,6,5,.74);
+    --shadow-rgb:0 0 0; --shadow-k:1;
+  }
+}
+:root{
+  --rail:var(--surface); --card:var(--surface); --card2:var(--surface-2); --line2:var(--line-2); --muted2:var(--muted);
+  --blue:var(--primary); --blue2:var(--primary-strong); --green:var(--low); --amber:var(--mid); --red:var(--high);
+  --white:var(--text); --lamp:var(--pt-light);
+  --shadow:0 18px 55px rgb(var(--shadow-rgb) / calc(.24 * var(--shadow-k)));
+  font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;
+}
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+  .icon { width: 20px; height: 20px; fill: currentColor; stroke: none; flex-shrink: 0; }
+
+  /* ---------- 版面 ---------- */
+  .shell { display: grid; grid-template-columns: minmax(0, 1fr) 460px; min-height: 100vh; min-height: 100dvh; }
+  .visual { position: relative; overflow: hidden; background: var(--surface-2); border-right: 1px solid var(--line); }
+  .panel { display: flex; flex-direction: column; padding: 32px 40px 28px; background: var(--rail); min-height: 100vh; min-height: 100dvh; }
+
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--line-2); background: var(--surface-3); border-radius: 13px; color: var(--blue); }
+  .brand-mark .icon { width: 23px; height: 23px; }
+  .brand-name { font-size: 17px; font-weight: 760; letter-spacing: .2px; }
+  .brand-name span { color: var(--primary); font-weight: 450; }
+  .brand-sub { color: var(--muted); font-size: 10px; margin-top: 2px; letter-spacing: 1.4px; }
+  .panel-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .skip { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 8px 4px; }
+  .skip:hover { color: var(--text); }
+
+  .stage { display: none; flex: 1; flex-direction: column; }
+  html[data-stage="intro"] .stage-intro, html[data-stage="auth"] .stage-auth { display: flex; }
+  html[data-stage="auth"] .skip { display: none; }
+
+  /* ---------- 地圖插圖 ---------- */
+  .scene { position: absolute; inset: 0; display: grid; place-items: center; padding: 40px; }
+  .map { width: min(100%, 640px); aspect-ratio: 1; position: relative; }
+  .map svg { width: 100%; height: 100%; display: block; }
+  .streets path { stroke: var(--surface-3); stroke-width: 10; fill: none; stroke-linecap: round; }
+  .streets .minor { stroke: var(--surface-2); stroke-width: 5; }
+  .blocks rect { fill: var(--surface); }
+  .route { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 9; stroke-dasharray: 1400; stroke-dashoffset: 1400; transition: stroke-dashoffset 1.1s cubic-bezier(.4, 0, .2, 1), opacity .4s, stroke .4s; opacity: 0; }
+  .layer { opacity: 0; transition: opacity .45s ease .35s; }
+  .marker-start { fill: var(--bg); stroke: var(--blue); stroke-width: 4; }
+  .marker-end { fill: var(--green); }
+
+  /* 每張介紹頁要亮起的元素 */
+  .map[data-scene="0"] .r-a, .map[data-scene="0"] .r-b, .map[data-scene="0"] .r-c,
+  .map[data-scene="1"] .r-a,
+  .map[data-scene="2"] .r-b,
+  .map[data-scene="3"] .r-a, .map[data-scene="3"] .r-b,
+  .map[data-scene="auth"] .r-a { stroke-dashoffset: 0; opacity: 1; }
+  .map[data-scene="1"] .r-b, .map[data-scene="1"] .r-c,
+  .map[data-scene="2"] .r-a, .map[data-scene="2"] .r-c,
+  .map[data-scene="3"] .r-c { stroke-dashoffset: 0; opacity: .5; stroke: var(--line-2); }
+  .map[data-scene="1"] .l-safety, .map[data-scene="3"] .l-flow { opacity: 1; }
+  .r-a { stroke: var(--blue); } .r-b { stroke: var(--green); } .r-c { stroke: var(--amber); }
+
+  .float { position: absolute; padding: 12px 14px; border: 1px solid var(--line2); border-radius: 13px; background: color-mix(in srgb,var(--surface) 93%,transparent); box-shadow: 0 18px 45px rgb(var(--shadow-rgb) / calc(0.47 * var(--shadow-k))); backdrop-filter: blur(6px); font-size: 12px; opacity: 0; transform: translateY(8px); transition: opacity .4s ease .5s, transform .4s ease .5s; pointer-events: none; }
+  .map[data-scene="0"] .f0, .map[data-scene="1"] .f1, .map[data-scene="2"] .f2, .map[data-scene="3"] .f3, .map[data-scene="auth"] .fa { opacity: 1; transform: none; }
+  .float .k { color: var(--muted); font-size: 10.5px; letter-spacing: .4px; }
+  .float strong { font-variant-numeric: tabular-nums; }
+
+  .f0 { left: 54%; top: 56%; min-width: 196px; }
+  .eta-row { display: flex; align-items: center; gap: 9px; padding: 5px 0; }
+  .eta-row i { width: 10px; height: 4px; border-radius: 3px; }
+  .eta-row b { flex: 1; font-weight: 600; }
+  .eta-row small { color: var(--muted); }
+
+  .f1 { left: 6%; top: 8%; width: 200px; }
+  .score { display: flex; align-items: baseline; gap: 6px; margin: 4px 0 10px; }
+  .score strong { font-size: 32px; letter-spacing: -1px; color: var(--primary-text); }
+  .score span { color: var(--muted); }
+  .bar { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 11px; }
+  .bar div { height: 5px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+  .bar div i { display: block; height: 100%; border-radius: 4px; }
+
+  .f2 { left: 50%; top: 50%; transform: translate(-50%, calc(-50% + 8px)); width: min(320px, 82%); }
+  .map[data-scene="2"] .f2 { transform: translate(-50%, -50%); }
+  .chart { display: flex; align-items: flex-end; gap: 7px; height: 92px; margin: 12px 0 8px; }
+  .chart span { flex: 1; border-radius: 5px 5px 2px 2px; background: var(--line-2); }
+  .chart span.best { background: var(--green); }
+  .chart-axis { display: flex; justify-content: space-between; color: var(--muted2); font-size: 10px; }
+  .f2 .verdict { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--low); }
+
+  .f3 { right: 5%; top: 9%; width: 210px; }
+  .flow-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+  .flow-row i { width: 10px; height: 4px; border-radius: 3px; }
+  .flow-row b { flex: 1; font-weight: 600; }
+  .flow-row .pill { font-size: 10px; padding: 2px 7px; border-radius: 20px; background: var(--surface-2); color: var(--low); }
+  .f3 .meter { height: 5px; border-radius: 4px; background: var(--surface-3); margin: 0 0 4px 18px; overflow: hidden; }
+  .f3 .meter i { display: block; height: 100%; }
+
+  .fa { left: 50%; bottom: 6%; transform: translate(-50%, 8px); white-space: nowrap; display: flex; align-items: center; gap: 10px; }
+  .map[data-scene="auth"] .fa { transform: translate(-50%, 0); }
+  .fa .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px color-mix(in srgb,var(--low) 56%,transparent); }
+
+  /* ---------- 介紹文字 ---------- */
+  .slides { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 28px 0; }
+  .slide { display: none; animation: rise .45s ease both; }
+  .slide.active { display: block; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; color: var(--blue); font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+  .eyebrow .icon { width: 17px; height: 17px; }
+  .slide h1 { font-size: 30px; line-height: 1.3; letter-spacing: -.3px; margin: 14px 0 14px; font-weight: 760; }
+  .slide p { color: var(--text-2); font-size: 15px; line-height: 1.8; margin: 0; }
+  .points { list-style: none; padding: 0; margin: 22px 0 0; display: flex; flex-direction: column; gap: 10px; }
+  .points li { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: var(--text); line-height: 1.6; }
+  .points li::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); margin-top: 8px; flex-shrink: 0; }
+  .slide .fineprint { margin-top: 18px; font-size: 11.5px; color: var(--muted2); line-height: 1.7; }
+
+  .intro-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .dots { display: flex; gap: 7px; }
+  .dots button { width: 8px; height: 8px; border: 0; border-radius: 6px; padding: 0; background: var(--line-2); transition: width .25s, background .25s; }
+  .dots button.active { width: 26px; background: var(--blue); }
+  .nav-btns { display: flex; gap: 10px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 20px; border-radius: 12px; border: 1px solid transparent; font-size: 14px; font-weight: 680; transition: background .15s, border-color .15s, opacity .15s; }
+  .btn-primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  .btn-primary:hover { background: var(--primary-strong); }
+  .btn-ghost { background: transparent; border-color: var(--line2); color: var(--text-2); }
+  .btn-ghost:hover { background: var(--primary-soft); }
+  .btn[disabled] { opacity: .55; cursor: default; }
+  .btn-round { width: 46px; padding: 0; }
+
+  /* ---------- 登入 ---------- */
+  .stage-auth { justify-content: center; padding: 26px 0 8px; }
+  .auth-head h1 { font-size: 26px; margin: 0 0 8px; font-weight: 760; letter-spacing: -.2px; }
+  .auth-head p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 24px 0 20px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 13px; }
+  .tabs button { border: 0; background: none; padding: 10px; border-radius: 10px; color: var(--muted); font-size: 14px; font-weight: 650; }
+  .tabs button[aria-selected="true"] { background: var(--primary-soft); color: var(--primary-text); box-shadow: inset 0 0 0 1px var(--primary-strong); }
+  form { display: flex; flex-direction: column; gap: 14px; }
+  form[hidden] { display: none; }
+  .field label { display: block; font-size: 12.5px; color: var(--text-2); margin-bottom: 7px; font-weight: 600; }
+  .input { position: relative; }
+  .input input { width: 100%; height: 48px; padding: 0 44px 0 14px; border-radius: 12px; border: 1px solid var(--line2); background: var(--surface); font-size: 15px; transition: border-color .15s, box-shadow .15s; }
+  .input input::placeholder { color: var(--muted); }
+  .input input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb,var(--primary) 19%,transparent); }
+  .input input[aria-invalid="true"] { border-color: var(--high); }
+  .reveal { position: absolute; right: 6px; top: 6px; width: 36px; height: 36px; display: grid; place-items: center; border: 0; background: none; color: var(--muted); border-radius: 9px; }
+  .reveal:hover { color: var(--text); background: var(--primary-soft); }
+  .hint { font-size: 11.5px; color: var(--muted2); margin-top: 6px; }
+  .error { display: none; gap: 8px; align-items: flex-start; padding: 11px 13px; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--high-line); color: var(--high); font-size: 13px; line-height: 1.55; }
+  .error.show { display: flex; }
+  .error .icon { width: 17px; height: 17px; margin-top: 1px; }
+  form .btn-primary { width: 100%; margin-top: 4px; }
+  .spinner { width: 16px; height: 16px; border: 2px solid color-mix(in srgb,var(--on-primary) 33%,transparent); border-top-color: var(--on-primary); border-radius: 50%; animation: spin .7s linear infinite; display: none; }
+  .loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .divider { display: flex; align-items: center; gap: 12px; margin: 22px 0; color: var(--muted2); font-size: 12px; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .guest { width: 100%; justify-content: space-between; text-align: left; padding: 14px 16px; min-height: 64px; }
+  .guest strong { display: block; font-size: 14px; }
+  .guest small { display: block; margin-top: 3px; font-size: 11.5px; color: var(--muted); font-weight: 450; line-height: 1.5; }
+  .guest-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: var(--surface-2); color: var(--text-2); flex-shrink: 0; }
+  .guest > span:nth-child(2) { flex: 1; }
+  .auth-foot { margin-top: 22px; text-align: center; }
+  .link { border: 0; background: none; color: var(--primary); font-size: 13px; padding: 6px; }
+  .link:hover { color: var(--primary-text); text-decoration: underline; }
+
+  .toast { position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px); opacity: 0; padding: 12px 18px; border-radius: 12px; background: var(--low-bg); border: 1px solid var(--low-line); color: var(--low); font-size: 14px; transition: .25s; pointer-events: none; display: flex; gap: 8px; align-items: center; z-index: 10; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- 手機 ---------- */
+  @media (max-width: 899px) {
+    .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .visual { border-right: 0; border-bottom: 1px solid var(--line); height: 40vh; height: 40dvh; min-height: 250px; }
+    .scene { padding: 14px; }
+    .map { width: auto; height: 100%; }
+    .float { font-size: 11px; padding: 9px 11px; }
+    .f0 { left: 50%; top: 58%; min-width: 160px; }
+    .f1 { width: 160px; } .score strong { font-size: 24px; }
+    .f3 { width: 170px; right: 2%; }
+    .chart { height: 60px; }
+    .panel { min-height: 0; padding: 18px 20px calc(18px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; margin-top: -18px; position: relative; z-index: 1; }
+    .panel-brand { display: none; }
+    .panel-top { justify-content: flex-end; min-height: 0; }
+    .slides { padding: 4px 0 22px; justify-content: flex-start; }
+    .slide h1 { font-size: 23px; margin: 10px 0; }
+    .slide p { font-size: 14px; }
+    .points { margin-top: 16px; gap: 7px; } .points li { font-size: 13px; }
+    html[data-stage="auth"] .visual { height: 22vh; height: 22dvh; min-height: 150px; }
+    html[data-stage="auth"] .float { display: none; }
+    .stage-auth { padding-top: 6px; }
+    .auth-head h1 { font-size: 22px; }
+    .tabs { margin: 18px 0 16px; }
+    .skip { position: absolute; top: 12px; right: 16px; }
+  }
+  @media (min-width: 900px) { .mobile-brand { display: none; } }
+  .mobile-brand { position: absolute; top: 14px; left: 16px; z-index: 2; }
+  .mobile-brand .brand-mark { width: 34px; height: 34px; border-radius: 11px; }
+  .mobile-brand .brand-name { font-size: 15px; }
+
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } .route { stroke-dashoffset: 0; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ========== 左側／上方插圖 ========== -->
+  <section class="visual" aria-hidden="true">
+    <div class="brand mobile-brand">
+      <div class="brand-mark" data-icon="shield"></div>
+      <div><div class="brand-name">SafeFlow <span>/</span> 智慧導航</div></div>
+    </div>
+    <div class="scene">
+      <div class="map" id="map" data-scene="0">
+        <svg viewBox="0 0 600 600">
+          <g class="blocks">
+            <rect x="110" y="215" width="120" height="145" rx="10"/><rect x="270" y="215" width="140" height="70" rx="10"/>
+            <rect x="270" y="320" width="140" height="160" rx="10"/><rect x="110" y="400" width="120" height="80" rx="10"/>
+            <rect x="450" y="215" width="100" height="265" rx="10"/><rect x="110" y="60" width="300" height="115" rx="10"/>
+            <rect x="450" y="60" width="100" height="115" rx="10"/><rect x="40" y="60" width="30" height="420" rx="10"/>
+          </g>
+          <g class="streets">
+            <path d="M90 40V560"/><path d="M250 40V560"/><path d="M430 40V560"/>
+            <path d="M40 195H570"/><path d="M40 380H570"/><path d="M40 500H570"/>
+            <path class="minor" d="M250 300H430"/><path class="minor" d="M170 195V500"/><path class="minor" d="M500 40V195"/>
+          </g>
+          <path class="route r-c" d="M90 500V195H500V120"/>
+          <path class="route r-b" d="M90 500H430V195H500V120"/>
+          <path class="route r-a" d="M90 500V380H250V195H500V120"/>
+
+          <!-- 夜間安全圖層 -->
+          <g class="layer l-safety">
+            <g style="fill:var(--pt-light)">
+              <circle cx="90" cy="470" r="5"/><circle cx="90" cy="420" r="5"/><circle cx="130" cy="380" r="5"/><circle cx="175" cy="380" r="5"/>
+              <circle cx="220" cy="380" r="5"/><circle cx="250" cy="340" r="5"/><circle cx="250" cy="290" r="5"/><circle cx="250" cy="240" r="5"/>
+              <circle cx="300" cy="195" r="5"/><circle cx="350" cy="195" r="5"/><circle cx="400" cy="195" r="5"/><circle cx="460" cy="195" r="5"/><circle cx="500" cy="160" r="5"/>
+            </g>
+            <g style="fill:var(--low);stroke:var(--surface)" stroke-width="2">
+              <rect x="258" y="250" width="13" height="13" rx="3"/><rect x="152" y="358" width="13" height="13" rx="3"/><rect x="372" y="172" width="13" height="13" rx="3"/>
+            </g>
+            <g fill="none" style="stroke:var(--high)" stroke-width="3"><circle cx="430" cy="430" r="13"/><circle cx="430" cy="300" r="13"/></g>
+            <g style="fill:var(--high)"><circle cx="430" cy="430" r="4"/><circle cx="430" cy="300" r="4"/></g>
+          </g>
+
+          <!-- 分流圖層：路線上的使用者 -->
+          <g class="layer l-flow">
+            <g style="fill:var(--primary)"><circle cx="90" cy="430" r="7"/><circle cx="160" cy="380" r="7"/><circle cx="210" cy="380" r="7"/><circle cx="250" cy="320" r="7"/><circle cx="250" cy="260" r="7"/><circle cx="320" cy="195" r="7"/><circle cx="380" cy="195" r="7"/><circle cx="450" cy="195" r="7"/></g>
+            <g style="fill:var(--low)"><circle cx="210" cy="500" r="7"/><circle cx="330" cy="500" r="7"/><circle cx="430" cy="330" r="7"/></g>
+            <circle cx="140" cy="500" r="10" fill="none" style="stroke:var(--low)" stroke-width="3" stroke-dasharray="4 4"/>
+          </g>
+
+          <circle class="marker-start" cx="90" cy="500" r="12"/>
+          <path class="marker-end" d="M500 70c-17 0-29 12-29 28 0 22 29 46 29 46s29-24 29-46c0-16-12-28-29-28z"/>
+          <circle cx="500" cy="98" r="9" style="fill:var(--bg)"/>
+        </svg>
+
+        <div class="float f0">
+          <div class="k">候選路線</div>
+          <div class="eta-row"><i style="background:var(--blue)"></i><b>路線 A</b><strong>18 分</strong><small>穩定</small></div>
+          <div class="eta-row"><i style="background:var(--green)"></i><b>路線 B</b><strong>21 分</strong><small>易塞</small></div>
+          <div class="eta-row"><i style="background:var(--amber)"></i><b>路線 C</b><strong>24 分</strong><small>穩定</small></div>
+        </div>
+        <div class="float f1">
+          <div class="k">夜間安全分數 · 路線 A</div>
+          <div class="score"><strong>86</strong><span>/ 100</span></div>
+          <div class="bar">事故<div><i style="width:82%;background:var(--high)"></i></div></div>
+          <div class="bar">路燈<div><i style="width:91%;background:var(--mid)"></i></div></div>
+          <div class="bar">商店<div><i style="width:76%;background:var(--low)"></i></div></div>
+        </div>
+        <div class="float f2">
+          <div class="k">不同出發時間的預估行程</div>
+          <div class="chart"><span style="height:72%"></span><span style="height:88%"></span><span style="height:100%"></span><span style="height:80%"></span><span class="best" style="height:46%"></span><span style="height:52%"></span><span style="height:58%"></span></div>
+          <div class="chart-axis"><span>17:30</span><span>18:00</span><span>18:30</span><span>19:00</span></div>
+          <div class="verdict">18:40 出發，比現在少約 9 分鐘</div>
+        </div>
+        <div class="float f3">
+          <div class="k">近 10 分鐘選擇人數</div>
+          <div class="flow-row"><i style="background:var(--blue)"></i><b>路線 A</b><strong>8 人</strong></div>
+          <div class="meter"><i style="width:80%;background:var(--blue)"></i></div>
+          <div class="flow-row"><i style="background:var(--green)"></i><b>路線 B</b><strong>3 人</strong><span class="pill">推薦</span></div>
+          <div class="meter"><i style="width:30%;background:var(--green)"></i></div>
+        </div>
+        <div class="float fa"><span class="dot"></span>步行・汽車・機車，同一個介面完成</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 右側／下方內容 ========== -->
+  <main class="panel">
+    <div class="panel-top">
+      <div class="brand panel-brand">
+        <div class="brand-mark" data-icon="shield"></div>
+        <div><div class="brand-name">SafeFlow <span>/</span> 智慧導航</div><div class="brand-sub">RISK-AWARE NAVIGATION</div></div>
+      </div>
+      <button class="skip" id="skipIntro" type="button">略過</button>
+    </div>
+
+    <!-- 功能介紹 -->
+    <section class="stage stage-intro" aria-roledescription="carousel" aria-label="系統功能介紹">
+      <div class="slides" id="slides">
+        <article class="slide active" aria-label="第 1 頁，共 4 頁">
+          <div class="eyebrow"><span data-icon="route"></span>路線比較</div>
+          <h1>一次看清每條路線<br>真正要花多久</h1>
+          <p>結合 TDX 即時路況與歷史紀錄，比較候選路線的預估時間與可靠度。不只看哪條最快，也看哪條最穩。</p>
+          <ul class="points"><li>支援步行、汽車、機車</li><li>以歷史 P90 呈現「最慢可能要多久」</li><li>依即時路況修正預估時間</li></ul>
+        </article>
+        <article class="slide" aria-label="第 2 頁，共 4 頁">
+          <div class="eyebrow"><span data-icon="shield"></span>夜間安全</div>
+          <h1>晚上回家<br>選更安心的那一條</h1>
+          <p>依警政署事故資料、各縣市路燈與沿途便利商店，為每條路線算出 0–100 的安全分數，並在地圖上標出路燈與商店。</p>
+          <ul class="points"><li>事故熱點</li><li>路燈分布</li><li>沿途便利商店</li></ul>
+          <p class="fineprint">安全分數依據歷史資料與環境條件，不代表即時亮燈或人潮狀況。</p>
+        </article>
+        <article class="slide" aria-label="第 3 頁，共 4 頁">
+          <div class="eyebrow"><span data-icon="clock"></span>最佳出發時間</div>
+          <h1>早一點或晚一點出門<br>可能差很多</h1>
+          <p>根據歷史路況推算不同出發時間的行程長度，告訴你什麼時候出門最省時間。</p>
+          <ul class="points"><li>比較前後時段的預估時間</li><li>標出最省時的出發點</li></ul>
+        </article>
+        <article class="slide" aria-label="第 4 頁，共 4 頁">
+          <div class="eyebrow"><span data-icon="split"></span>分流推薦</div>
+          <h1>不必所有人<br>都擠同一條路</h1>
+          <p>參考近期其他使用者的選擇，在安全分數與時間都差不多的路線之間分散推薦，減少集中造成的壅塞。</p>
+          <ul class="points"><li>只在安全差距 5 分、時間差 5 分鐘以內的路線間分流</li><li>你可以看到推薦原因，也能自己改選</li></ul>
+        </article>
+      </div>
+
+      <div class="intro-foot">
+        <div class="dots" id="dots" role="tablist" aria-label="選擇介紹頁"></div>
+        <div class="nav-btns">
+          <button class="btn btn-ghost btn-round" id="prevSlide" type="button" aria-label="上一頁"><span data-icon="left"></span></button>
+          <button class="btn btn-primary" id="nextSlide" type="button"><span id="nextLabel">下一步</span><span data-icon="right"></span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 登入／註冊／訪客 -->
+    <section class="stage stage-auth" aria-label="登入或註冊">
+      <div class="auth-head">
+        <h1 id="authTitle">歡迎回來</h1>
+        <p id="authSub">登入你的帳號，或先以訪客身分使用。</p>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="登入或註冊">
+        <button type="button" role="tab" id="tabLogin" aria-selected="true" aria-controls="loginForm">登入</button>
+        <button type="button" role="tab" id="tabRegister" aria-selected="false" aria-controls="registerForm">註冊</button>
+      </div>
+
+      <form id="loginForm" role="tabpanel" aria-labelledby="tabLogin" novalidate>
+        <div class="field">
+          <label for="loginEmail">電子郵件</label>
+          <div class="input"><input id="loginEmail" name="email" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" required></div>
+        </div>
+        <div class="field">
+          <label for="loginPassword">密碼</label>
+          <div class="input"><input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="輸入密碼" required>
+            <button class="reveal" type="button" aria-label="顯示密碼" data-target="loginPassword"><span data-icon="eye"></span></button></div>
+        </div>
+        <div class="error" role="alert" id="loginError"><span data-icon="alert"></span><span></span></div>
+        <button class="btn btn-primary" type="submit"><span class="spinner"></span><span>登入</span></button>
+      </form>
+
+      <form id="registerForm" role="tabpanel" aria-labelledby="tabRegister" novalidate hidden>
+        <div class="field">
+          <label for="regName">暱稱</label>
+          <div class="input"><input id="regName" name="displayName" type="text" autocomplete="nickname" maxlength="40" placeholder="要怎麼稱呼你？"></div>
+        </div>
+        <div class="field">
+          <label for="regEmail">電子郵件</label>
+          <div class="input"><input id="regEmail" name="email" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" required></div>
+        </div>
+        <div class="field">
+          <label for="regPassword">密碼</label>
+          <div class="input"><input id="regPassword" name="password" type="password" autocomplete="new-password" minlength="8" placeholder="至少 8 個字元" required>
+            <button class="reveal" type="button" aria-label="顯示密碼" data-target="regPassword"><span data-icon="eye"></span></button></div>
+          <div class="hint">至少 8 個字元，建議混合英文與數字。</div>
+        </div>
+        <div class="error" role="alert" id="registerError"><span data-icon="alert"></span><span></span></div>
+        <button class="btn btn-primary" type="submit"><span class="spinner"></span><span>建立帳號</span></button>
+      </form>
+
+      <div class="divider">或</div>
+      <button class="btn btn-ghost guest" id="guestButton" type="button">
+        <span class="guest-icon"><span data-icon="user"></span></span>
+        <span><strong>以訪客模式繼續</strong><small>可以使用所有導航功能，設定與紀錄只保留在這個瀏覽器。</small></span>
+        <span data-icon="right"></span>
+      </button>
+
+      <div class="auth-foot"><button class="link" id="replayIntro" type="button">再看一次功能介紹</button></div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status"><span data-icon="check"></span><span id="toastText"></span></div>
+
+<script>
+(function () {
+  var S = window.SafeFlowSession;
+  var ICONS = {
+    shield:"<path d='M216,56v56c0,96-88,120-88,120S40,208,40,112V56a8,8,0,0,1,8-8H208A8,8,0,0,1,216,56Z' opacity='0.2'/><path d='M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm0,72c0,37.07-13.66,67.16-40.6,89.42A129.3,129.3,0,0,1,128,223.62a128.25,128.25,0,0,1-38.92-21.81C61.82,179.51,48,149.3,48,112l0-56,160,0ZM82.34,141.66a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32l-56,56a8,8,0,0,1-11.32,0Z'/>",
+    route:"<path d='M224,200a24,24,0,1,1-24-24A24,24,0,0,1,224,200Z' opacity='0.2'/><path d='M200,168a32.06,32.06,0,0,0-31,24H72a32,32,0,0,1,0-64h96a40,40,0,0,0,0-80H72a8,8,0,0,0,0,16h96a24,24,0,0,1,0,48H72a48,48,0,0,0,0,96h97a32,32,0,1,0,31-40Zm0,48a16,16,0,1,1,16-16A16,16,0,0,1,200,216Z'/>",
+    clock:"<path d='M224,128a96,96,0,1,1-96-96A96,96,0,0,1,224,128Z' opacity='0.2'/><path d='M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm64-88a8,8,0,0,1-8,8H128a8,8,0,0,1-8-8V72a8,8,0,0,1,16,0v48h48A8,8,0,0,1,192,128Z'/>",
+    split:"<path d='M192,136v80H64V136l64-64Z' opacity='0.2'/><path d='M229.66,189.66l-32,32a8,8,0,0,1-11.32,0l-32-32a8,8,0,0,1,11.32-11.32L184,196.69V139.31l-56-56-56,56v57.38l18.34-18.35a8,8,0,0,1,11.32,11.32l-32,32a8,8,0,0,1-11.32,0l-32-32a8,8,0,0,1,11.32-11.32L56,196.69V136a8,8,0,0,1,2.34-5.66L120,68.69V24a8,8,0,0,1,16,0V68.69l61.66,61.65A8,8,0,0,1,200,136v60.69l18.34-18.35a8,8,0,0,1,11.32,11.32Z'/>",
+    left:"<path d='M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z'/>",
+    right:"<path d='M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z'/>",
+    eye:"<path d='M128,56C48,56,16,128,16,128s32,72,112,72,112-72,112-72S208,56,128,56Zm0,112a40,40,0,1,1,40-40A40,40,0,0,1,128,168Z' opacity='0.2'/><path d='M247.31,124.76c-.35-.79-8.82-19.58-27.65-38.41C194.57,61.26,162.88,48,128,48S61.43,61.26,36.34,86.35C17.51,105.18,9,124,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208s66.57-13.26,91.66-38.34c18.83-18.83,27.3-37.61,27.65-38.4A8,8,0,0,0,247.31,124.76ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.47,133.47,0,0,1,25,128,133.33,133.33,0,0,1,48.07,97.25C70.33,75.19,97.22,64,128,64s57.67,11.19,79.93,33.25A133.46,133.46,0,0,1,231.05,128C223.84,141.46,192.43,192,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z'/>",
+    eyeOff:"<path d='M128,56C48,56,16,128,16,128s32,72,112,72,112-72,112-72S208,56,128,56Zm0,112a40,40,0,1,1,40-40A40,40,0,0,1,128,168Z' opacity='0.2'/><path d='M53.92,34.62A8,8,0,1,0,42.08,45.38L61.32,66.55C25,88.84,9.38,123.2,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208a127.11,127.11,0,0,0,52.07-10.83l22,24.21a8,8,0,1,0,11.84-10.76Zm47.33,75.84,41.67,45.85a32,32,0,0,1-41.67-45.85ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.16,133.16,0,0,1,25,128c4.69-8.79,19.66-33.39,47.35-49.38l18,19.75a48,48,0,0,0,63.66,70l14.73,16.2A112,112,0,0,1,128,192Zm6-95.43a8,8,0,0,1,3-15.72,48.16,48.16,0,0,1,38.77,42.64,8,8,0,0,1-7.22,8.71,6.39,6.39,0,0,1-.75,0,8,8,0,0,1-8-7.26A32.09,32.09,0,0,0,134,96.57Zm113.28,34.69c-.42.94-10.55,23.37-33.36,43.8a8,8,0,1,1-10.67-11.92A132.77,132.77,0,0,0,231.05,128a133.15,133.15,0,0,0-23.12-30.77C185.67,75.19,158.78,64,128,64a118.37,118.37,0,0,0-19.36,1.57A8,8,0,1,1,106,49.79,134,134,0,0,1,128,48c34.88,0,66.57,13.26,91.66,38.35,18.83,18.83,27.3,37.62,27.65,38.41A8,8,0,0,1,247.31,131.26Z'/>",
+    user:"<path d='M192,96a64,64,0,1,1-64-64A64,64,0,0,1,192,96Z' opacity='0.2'/><path d='M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z'/>",
+    alert:"<path d='M215.46,216H40.54C27.92,216,20,202.79,26.13,192.09L113.59,40.22c6.3-11,22.52-11,28.82,0l87.46,151.87C236,202.79,228.08,216,215.46,216Z' opacity='0.2'/><path d='M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM222.93,203.8a8.5,8.5,0,0,1-7.48,4.2H40.55a8.5,8.5,0,0,1-7.48-4.2,7.59,7.59,0,0,1,0-7.72L120.52,44.21a8.75,8.75,0,0,1,15,0l87.45,151.87A7.59,7.59,0,0,1,222.93,203.8ZM120,144V104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,180Z'/>",
+    check:"<path d='M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z'/>"
+  };
+  function icon(name) { return '<svg class="icon" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">' + (ICONS[name] || '') + '</svg>'; }
+  function paintIcons(root) { (root || document).querySelectorAll('[data-icon]').forEach(function (el) { el.innerHTML = icon(el.dataset.icon); }); }
+  paintIcons();
+
+  var root = document.documentElement;
+  var map = document.getElementById('map');
+
+  /* ---------- 功能介紹 ---------- */
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var dotsEl = document.getElementById('dots');
+  var nextLabel = document.getElementById('nextLabel');
+  var prevBtn = document.getElementById('prevSlide');
+  var index = 0;
+
+  slides.forEach(function (_, i) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'tab'); b.setAttribute('aria-label', '第 ' + (i + 1) + ' 頁');
+    b.addEventListener('click', function () { go(i); });
+    dotsEl.appendChild(b);
+  });
+
+  function go(i) {
+    index = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (s, n) { s.classList.toggle('active', n === index); });
+    Array.prototype.forEach.call(dotsEl.children, function (d, n) { d.classList.toggle('active', n === index); d.setAttribute('aria-selected', n === index); });
+    map.dataset.scene = String(index);
+    prevBtn.disabled = index === 0;
+    nextLabel.textContent = index === slides.length - 1 ? '開始使用' : '下一步';
+  }
+
+  function showAuth() {
+    S.markOnboarded();
+    if (S.get()) { location.replace(S.HOME_PAGE); return; }
+    root.dataset.stage = 'auth';
+    map.dataset.scene = 'auth';
+    if (location.hash !== '#auth') history.replaceState(null, '', '#auth');
+    setTimeout(function () { var f = document.querySelector('form:not([hidden]) input'); if (f && window.innerWidth >= 900) f.focus(); }, 60);
+  }
+  function showIntro() {
+    root.dataset.stage = 'intro';
+    history.replaceState(null, '', '#intro');
+    go(0);
+  }
+
+  document.getElementById('nextSlide').addEventListener('click', function () { index === slides.length - 1 ? showAuth() : go(index + 1); });
+  prevBtn.addEventListener('click', function () { go(index - 1); });
+  document.getElementById('skipIntro').addEventListener('click', showAuth);
+  document.getElementById('replayIntro').addEventListener('click', showIntro);
+
+  document.addEventListener('keydown', function (e) {
+    if (root.dataset.stage !== 'intro') return;
+    if (e.key === 'ArrowRight') { index === slides.length - 1 ? showAuth() : go(index + 1); }
+    if (e.key === 'ArrowLeft') go(index - 1);
+  });
+
+  /* 手機左右滑動 */
+  var touchX = null;
+  document.addEventListener('touchstart', function (e) { touchX = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (touchX === null || root.dataset.stage !== 'intro') return;
+    var dx = e.changedTouches[0].clientX - touchX; touchX = null;
+    if (Math.abs(dx) < 50) return;
+    if (dx < 0) { index === slides.length - 1 ? showAuth() : go(index + 1); } else { go(index - 1); }
+  }, { passive: true });
+
+  /* ---------- 登入／註冊 ---------- */
+  var tabLogin = document.getElementById('tabLogin');
+  var tabRegister = document.getElementById('tabRegister');
+  var loginForm = document.getElementById('loginForm');
+  var registerForm = document.getElementById('registerForm');
+  var authTitle = document.getElementById('authTitle');
+  var authSub = document.getElementById('authSub');
+
+  function setTab(which) {
+    var isLogin = which === 'login';
+    tabLogin.setAttribute('aria-selected', isLogin);
+    tabRegister.setAttribute('aria-selected', !isLogin);
+    loginForm.hidden = !isLogin;
+    registerForm.hidden = isLogin;
+    authTitle.textContent = isLogin ? '歡迎回來' : '建立帳號';
+    authSub.textContent = isLogin ? '登入你的帳號，或先以訪客身分使用。' : '只需要電子郵件和密碼，不到一分鐘就完成。';
+    clearError(loginForm); clearError(registerForm);
+  }
+  tabLogin.addEventListener('click', function () { setTab('login'); });
+  tabRegister.addEventListener('click', function () { setTab('register'); });
+
+  document.querySelectorAll('.reveal').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var input = document.getElementById(btn.dataset.target);
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-label', show ? '隱藏密碼' : '顯示密碼');
+      btn.innerHTML = icon(show ? 'eyeOff' : 'eye');
+    });
+  });
+
+  function showError(form, msg, field) {
+    var box = form.querySelector('.error');
+    box.lastElementChild.textContent = msg;
+    box.classList.add('show');
+    if (field) { field.setAttribute('aria-invalid', 'true'); field.focus(); }
+  }
+  function clearError(form) {
+    form.querySelector('.error').classList.remove('show');
+    form.querySelectorAll('[aria-invalid]').forEach(function (el) { el.removeAttribute('aria-invalid'); });
+  }
+  function setBusy(form, busy) {
+    var btn = form.querySelector('[type=submit]');
+    btn.disabled = busy; btn.classList.toggle('loading', busy);
+  }
+  function isEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
+
+  function finish(message) {
+    document.getElementById('toastText').textContent = message;
+    document.getElementById('toast').classList.add('show');
+    setTimeout(function () { location.replace(S.HOME_PAGE); }, 700);
+  }
+
+  loginForm.addEventListener('submit', function (e) {
+    e.preventDefault(); clearError(loginForm);
+    var email = loginForm.email.value.trim(), pw = loginForm.password.value;
+    if (!isEmail(email)) return showError(loginForm, '請輸入有效的電子郵件', loginForm.email);
+    if (!pw) return showError(loginForm, '請輸入密碼', loginForm.password);
+    setBusy(loginForm, true);
+    S.login(email, pw)
+      .then(function (user) { finish('登入成功，歡迎回來，' + (user.displayName || '') ); })
+      .catch(function (err) { setBusy(loginForm, false); showError(loginForm, err.message, err.status === 401 ? loginForm.password : null); });
+  });
+
+  registerForm.addEventListener('submit', function (e) {
+    e.preventDefault(); clearError(registerForm);
+    var name = registerForm.displayName.value.trim(), email = registerForm.email.value.trim(), pw = registerForm.password.value;
+    if (!isEmail(email)) return showError(registerForm, '請輸入有效的電子郵件', registerForm.email);
+    if (pw.length < 8) return showError(registerForm, '密碼至少需要 8 個字元', registerForm.password);
+    setBusy(registerForm, true);
+    S.register(name, email, pw)
+      .then(function (user) { finish('帳號已建立，歡迎，' + (user.displayName || '')); })
+      .catch(function (err) {
+        setBusy(registerForm, false);
+        if (err.status === 409) {
+          showError(registerForm, err.message, registerForm.email);
+          loginForm.email.value = email;
+        } else showError(registerForm, err.message);
+      });
+  });
+
+  document.getElementById('guestButton').addEventListener('click', function () {
+    S.setGuest();
+    finish('已進入訪客模式');
+  });
+
+  /* ---------- 初始畫面 ---------- */
+  if (root.dataset.stage === 'auth') { map.dataset.scene = 'auth'; S.markOnboarded(); } else go(0);
+})();
+</script>
+</body>
+</html>

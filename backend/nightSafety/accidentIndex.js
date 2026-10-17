@@ -76,7 +76,7 @@ function loadFromDatabase() {
     const conds = FLAG_COLUMNS.filter(([bit]) => flagMask & bit).map(([, sql]) => sql);
     const extra = conds.length ? `AND (${conds.join(" OR ")})` : "";
     stmt = db.prepare(
-      `SELECT latitude, longitude, occurred_date AS date, severity_text AS severity, category,
+      `SELECT latitude, longitude, occurred_date AS date, severity_text AS severity, category, location,
               involves_pedestrian, involves_scooter, involves_car, involves_bicycle
        FROM accidents
        WHERE duplicate_of_id IS NULL
@@ -106,6 +106,7 @@ function loadFromDatabase() {
         date: r.date,
         severity: r.severity,
         category: r.category,
+        location: r.location || "",
         involved: involvedLabel(r),
       }));
   }
