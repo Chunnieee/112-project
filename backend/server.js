@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { assessHistoricalRisk } from "./riskEngine.js";
+import { registerSafetyRoutes } from "./safeRouteModel.js";
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
 import { loadRouteVdObservations } from "./tdxVdRouteEngine.js";
 import { resolvePlaceUniversal } from "./placeSearchEngine.js";
@@ -89,6 +90,9 @@ const limiter = rateLimit({
 });
 
 app.use("/api", limiter);
+
+// 安全模式 Safety Mode (reads TablePlus SQLite database)
+registerSafetyRoutes(app, { osrmBaseUrl: OSRM_BASE_URL, fetchWithTimeout });
 
 app.get("/api/health", (req, res) => {
   res.json({

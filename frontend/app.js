@@ -16,9 +16,12 @@ const map = L.map("map").setView(
   13
 );
 
+// OpenStreetMap tiles (free, no API key).
+// The soft grey look comes from style.css (.leaflet-tile-pane filter).
 L.tileLayer(
-  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   {
+    maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   }
 ).addTo(map);
@@ -622,6 +625,11 @@ function removeWaypoint(id) {
 
 function removeMapRoutes() {
 
+  // 安全模式：also clear stores / accidents / dark segments
+  if (typeof clearSafetyOverlay === "function") {
+    clearSafetyOverlay();
+  }
+
   routeLines.forEach(
     (line) => {
 
@@ -711,6 +719,16 @@ function clearRoutes() {
 // =========================================================
 
 async function calculateRoute() {
+
+  // 單段風險路線只有「開車」有 TDX 路況。
+  // 選步行 / 捷運 / 公車 / 台鐵 / 高鐵時，改用多交通工具規劃，
+  // 這樣步行才會用步行速度，而不是開車時間。
+  const selectedEndMode =
+    document.getElementById("endMode")?.value || "drive";
+
+  if (selectedEndMode !== "drive") {
+    return calculateMultiModalRoute();
+  }
 
   try {
 
@@ -1779,6 +1797,138 @@ function renderMultiModalSummary(
 
 window.useMyLocation =
   useMyLocation;
+
+// =========================================================
+// MULTI-MODAL ROUTE (was missing: window.calculateMultiModalRoute
+// pointed to a function that did not exist)
+// =========================================================
+
+async function calculateMultiModalRoute() {
+  const status = document.getElementById("status");
+
+  try {
+    const startText = document.getElementById("startInput").value.trim();
+    const endText = document.getElementById("endInput").value.trim();
+    const endMode = document.getElementById("endMode").value || "walk";
+
+    if (!startText || !endText) {
+      alert("請輸入起點和終點");
+      return;
+    }
+
+    document.getElementById("routeList").innerHTML = "";
+    document.getElementById("recommendationBox").innerHTML = "";
+    status.innerHTML = "正在解析地點...";
+
+    // Start
+    const startPoint = await geocode(startText);
+    const points = [
+      {
+        name: startPoint.displayName || startText,
+        lat: startPoint.lat,
+        lon: startPoint.lon,
+      },
+    ];
+
+    // Waypoints (中途點)
+    const cards = document.querySelectorAll("#waypointList .waypointCard");
+    for (const card of cards) {
+      const text = card.querySelector(".waypointAddress")?.value.trim();
+      const mode = card.querySelector(".waypointMode")?.value || "walk";
+      if (!text) continue;
+
+      const p = await geocode(text);
+      points.push({
+        name: p.displayName || text,
+        lat: p.lat,
+        lon: p.lon,
+        modeFromPrevious: mode,
+      });
+    }
+
+    // End
+    const endPoint = await geocode(endText);
+    points.push({
+      name: endPoint.displayName || endText,
+      lat: endPoint.lat,
+      lon: endPoint.lon,
+      modeFromPrevious: endMode,
+    });
+
+    clearOnlyMapRoutes();
+
+    points.forEach(function (p, i) {
+      const marker = L.marker([p.lat, p.lon])
+        .addTo(map)
+        .bindPopup(
+          (i === 0 ? "起點：" : i === points.length - 1 ? "終點：" : "中途點：") +
+            escapeHtml(p.name)
+        );
+      if (i === 0) startMarker = marker;
+      else if (i === points.length - 1) endMarker = marker;
+      else waypointMarkers.push(marker);
+    });
+
+    status.innerHTML = "正在計算每一段的時間...";
+
+    const now = new Date();
+    const departureTime =
+      String(now.getHours()).padStart(2, "0") + ":" +
+      String(now.getMinutes()).padStart(2, "0");
+
+    const data = await fetchJson(BACKEND_BASE_URL + "/api/multimodal-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ points, departureTime }),
+    });
+
+    if (!Array.isArray(data.segments) || data.segments.length === 0) {
+      throw new Error("Backend 有回應，但沒有路段");
+    }
+
+    // Draw each segment
+    removeMapRoutes();
+    data.segments.forEach(function (segment) {
+      const coords = (segment.geometry?.coordinates || []).map(function (c) {
+        return [Number(c[1]), Number(c[0])];
+      });
+      if (coords.length < 2) return;
+
+      const line = L.polyline(coords, {
+        weight: 6,
+        opacity: 0.9,
+        dashArray: segment.mode === "walk" ? "8 8" : null,
+      })
+        .addTo(map)
+        .bindPopup(
+          "<b>第 " + escapeHtml(segment.segmentId) + " 段：" +
+            escapeHtml(segment.modeLabel) + "</b>" +
+            "<br>預估：" + escapeHtml(segment.expectedMin) + " 分鐘" +
+            "<br>距離：" + escapeHtml(segment.distanceKm) + " 公里" +
+            "<br>" + escapeHtml(segment.departTime) + " → " +
+            escapeHtml(segment.arriveTime)
+        );
+      routeLines.push(line);
+    });
+
+    if (routeLines.length) {
+      map.fitBounds(L.featureGroup(routeLines).getBounds(), { padding: [30, 30] });
+    }
+
+    renderMultiModalSummary(data);
+
+    status.innerHTML =
+      "<b>多交通工具路線規劃完成。</b><br>" +
+      "出發 " + escapeHtml(data.departureTime) +
+      " → 抵達 " + escapeHtml(data.arrivalTime);
+  } catch (error) {
+    console.error("calculateMultiModalRoute error:", error);
+    status.innerHTML =
+      "<span style='color:red;'><b>多點路線錯誤：</b>" +
+      escapeHtml(error.message) + "</span>";
+  }
+}
+
 
 window.startVoiceInput =
   startVoiceInput;

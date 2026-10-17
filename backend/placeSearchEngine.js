@@ -647,9 +647,13 @@ export async function resolvePlaceUniversal({
 
   let first =
     await searchQueries({
-      queries: [
-        rawQuery
-      ],
+      // 也試試「臺 ↔ 台」兩種寫法（例如 臺北101 → 台北101），
+      // 這樣沒有 Groq key 時也找得到。
+      queries: unique([
+        rawQuery,
+        rawQuery.replaceAll("臺", "台"),
+        rawQuery.replaceAll("台", "臺"),
+      ]),
 
       tomtomApiKey,
 

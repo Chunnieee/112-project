@@ -1,0 +1,472 @@
+# =========================================================
+# build_safety_db.py
+# ---------------------------------------------------------
+# Reads EVERY csv in this sql/ folder plus every streetlight-like
+# table already in Taiwan_SafetyData.sqlite, and merges them into
+# three unified tables:
+#
+#   streetlights        (lat, lon, city, district, source)
+#   accidents           (lat, lon, date, time, location, category,
+#                        severity, is_pedestrian, source)
+#   convenience_stores  (copied from the existing taipei table)
+#
+# Your original TablePlus tables are NOT touched or deleted.
+#
+# Run:   python build_safety_db.py
+# =========================================================
+
+import csv
+import os
+import re
+import sqlite3
+import sys
+
+try:
+    from pyproj import Transformer
+except ImportError:
+    sys.exit("Missing pyproj. Run:  pip install pyproj")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(HERE, "..", "TablePlus", "Taiwan_SafetyData.sqlite")
+
+# TWD97 / TM2 zone 121  ->  WGS84
+TM2_TO_WGS84 = Transformer.from_crs("EPSG:3826", "EPSG:4326", always_xy=True)
+
+TW_LON = (119.0, 123.0)
+TW_LAT = (21.0, 26.5)
+
+
+# ---------------------------------------------------------
+# coordinate helpers
+# ---------------------------------------------------------
+
+def to_float(value):
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def looks_like_tm2(x, y):
+    return x is not None and y is not None and 50000 < x < 500000 and 2000000 < y < 2900000
+
+
+def looks_like_wgs84(lon, lat):
+    return (
+        lon is not None
+        and lat is not None
+        and TW_LON[0] <= lon <= TW_LON[1]
+        and TW_LAT[0] <= lat <= TW_LAT[1]
+    )
+
+
+def normalise_point(a, b):
+    """Return (lat, lon) from any of: (lon,lat), (lat,lon), (tm2x,tm2y)."""
+    a = to_float(a)
+    b = to_float(b)
+    if a is None or b is None:
+        return None
+
+    if looks_like_tm2(a, b):
+        lon, lat = TM2_TO_WGS84.transform(a, b)
+        return (lat, lon) if looks_like_wgs84(lon, lat) else None
+    if looks_like_tm2(b, a):
+        lon, lat = TM2_TO_WGS84.transform(b, a)
+        return (lat, lon) if looks_like_wgs84(lon, lat) else None
+
+    # already degrees: decide which one is latitude
+    if looks_like_wgs84(a, b):   # a = lon, b = lat
+        return (b, a)
+    if looks_like_wgs84(b, a):   # a = lat, b = lon
+        return (a, b)
+    return None
+
+
+def clean_header(name):
+    return str(name or "").replace("\ufeff", "").strip()
+
+
+def pick(headers, *patterns):
+    """First header matching any regex pattern."""
+    for pattern in patterns:
+        for h in headers:
+            if re.search(pattern, h, re.IGNORECASE):
+                return h
+    return None
+
+
+# ---------------------------------------------------------
+# column detection
+# ---------------------------------------------------------
+
+def find_coord_columns(headers):
+    """Return (col_a, col_b) holding the position, or None."""
+    lat = pick(headers, r"^latitude$", r"北緯", r"^lat$", r"緯度N", r"^緯度$")
+    lon = pick(headers, r"^longitude$", r"東經", r"^lon$|^lng$", r"經度E", r"^經度$")
+    if lat and lon:
+        return lat, lon
+
+    x = pick(headers, r"TWD.?97.?X", r"^x97", r"^x$")
+    y = pick(headers, r"TWD.?97.?Y", r"^y97", r"^y$")
+    if x and y:
+        return y, x
+    return None
+
+
+def is_accident_table(headers):
+    return bool(pick(headers, r"發生時間")) and bool(pick(headers, r"發生地點"))
+
+
+STREETLIGHT_HINT = r"路燈|燈別|燈泡|燈具|燈桿|LightKind|LightWatt|pole_id|lamp|light"
+
+
+def is_streetlight_table(headers, name=""):
+    if is_accident_table(headers):
+        return False
+    if find_coord_columns(headers) is None:
+        return False
+    if pick(headers, STREETLIGHT_HINT):
+        return True
+    if re.search(STREETLIGHT_HINT, name, re.IGNORECASE):
+        return True
+    # New Taipei style: town/seqno/address/power/longitude/latitude
+    return bool(pick(headers, r"^seqno$")) and bool(pick(headers, r"^power$"))
+
+
+# ---------------------------------------------------------
+# accident parsing
+# ---------------------------------------------------------
+
+ROC_DATE = re.compile(r"(\d{2,3})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2})時(\d{1,2})分")
+
+
+def parse_roc_datetime(text):
+    m = ROC_DATE.search(str(text or ""))
+    if not m:
+        return None, None
+    year = int(m.group(1)) + 1911
+    return (
+        f"{year:04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}",
+        f"{int(m.group(4)):02d}:{int(m.group(5)):02d}",
+    )
+
+
+CITY_RE = re.compile(r"^(臺北市|台北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
+                     r"基隆市|新竹市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義市|嘉義縣|"
+                     r"屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)")
+
+
+def city_from_location(text):
+    m = CITY_RE.match(str(text or "").strip())
+    return m.group(1) if m else None
+
+
+def severity_from(text):
+    dead = re.search(r"死亡(\d+)", str(text or ""))
+    hurt = re.search(r"受傷(\d+)", str(text or ""))
+    return (int(dead.group(1)) if dead else 0), (int(hurt.group(1)) if hurt else 0)
+
+
+def category_from_filename(name):
+    return "A1" if re.search(r"A1", name, re.IGNORECASE) else "A2"
+
+
+# ---------------------------------------------------------
+# readers
+# ---------------------------------------------------------
+
+def read_header(path):
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
+        reader = csv.reader(fh)
+        try:
+            return [clean_header(h) for h in next(reader)]
+        except StopIteration:
+            return []
+
+
+def ingest_streetlight_csv(path, cursor):
+    headers = read_header(path)
+    coords = find_coord_columns(headers)
+    if not coords:
+        return 0
+
+    a_col, b_col = coords
+    ai, bi = headers.index(a_col), headers.index(b_col)
+    city_i = headers.index(pick(headers, r"^town$", r"行政轄區", r"^Dist$", r"行政區")) \
+        if pick(headers, r"^town$", r"行政轄區", r"^Dist$", r"行政區") else None
+
+    source = os.path.basename(path)
+    default_city = guess_city_from_name(source)
+    rows = []
+    kept = 0
+
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
+        reader = csv.reader(fh)
+        next(reader, None)
+        for row in reader:
+            if len(row) <= max(ai, bi):
+                continue
+            point = normalise_point(row[ai], row[bi])
+            if not point:
+                continue
+            district = row[city_i].strip() if city_i is not None and len(row) > city_i else None
+            rows.append((point[0], point[1], default_city, district, source))
+            kept += 1
+            if len(rows) >= 50000:
+                cursor.executemany("INSERT INTO streetlights VALUES (?,?,?,?,?)", rows)
+                rows = []
+
+    if rows:
+        cursor.executemany("INSERT INTO streetlights VALUES (?,?,?,?,?)", rows)
+    return kept
+
+
+def guess_city_from_name(name):
+    for city in ["臺北", "台北", "新北", "桃園", "中壢", "臺中", "台中", "臺南",
+                 "台南", "高雄", "基隆", "新竹", "苗栗", "彰化", "南投", "雲林",
+                 "嘉義", "屏東", "宜蘭", "花蓮", "臺東", "台東", "澎湖"]:
+        if city in name:
+            if city == "中壢":
+                return "桃園市"
+            return city + ("市" if city in ["臺北", "台北", "新北", "桃園", "臺中",
+                                            "台中", "臺南", "台南", "高雄", "基隆"] else "")
+    if "taipei" in name.lower():
+        return "臺北市"
+    return None
+
+
+def ingest_accident_csv(path, cursor):
+    headers = read_header(path)
+    coords = find_coord_columns(headers)
+    if not coords:
+        return 0
+
+    a_col, b_col = coords
+    ai, bi = headers.index(a_col), headers.index(b_col)
+    t_i = headers.index(pick(headers, r"發生時間"))
+    loc_i = headers.index(pick(headers, r"發生地點"))
+    cas_col = pick(headers, r"死亡受傷人數")
+    cas_i = headers.index(cas_col) if cas_col else None
+    veh_col = pick(headers, r"車種")
+    veh_i = headers.index(veh_col) if veh_col else None
+
+    source = os.path.basename(path)
+    category = category_from_filename(source)
+    rows = []
+    kept = 0
+
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
+        reader = csv.reader(fh)
+        next(reader, None)
+        for row in reader:
+            if len(row) <= max(ai, bi, t_i, loc_i):
+                continue
+            point = normalise_point(row[ai], row[bi])
+            if not point:
+                continue
+
+            date, time = parse_roc_datetime(row[t_i])
+            location = row[loc_i].strip()
+            dead, hurt = severity_from(row[cas_i]) if cas_i is not None else (0, 0)
+            vehicles = row[veh_i] if veh_i is not None else ""
+            is_ped = 1 if "行人" in vehicles else 0
+
+            rows.append((point[0], point[1], date, time, location, category,
+                         dead, hurt, is_ped, city_from_location(location), source))
+            kept += 1
+            if len(rows) >= 50000:
+                cursor.executemany(
+                    "INSERT INTO accidents VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+                rows = []
+
+    if rows:
+        cursor.executemany("INSERT INTO accidents VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+    return kept
+
+
+def ingest_existing_table(conn, cursor, table):
+    """Pull a streetlight-like table that was imported in TablePlus."""
+    headers = [clean_header(r[1]) for r in conn.execute(f'PRAGMA table_info("{table}")')]
+    raw = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')]
+    if not is_streetlight_table(headers, table):
+        return 0
+
+    coords = find_coord_columns(headers)
+    a_col, b_col = coords
+    a_raw = raw[headers.index(a_col)]
+    b_raw = raw[headers.index(b_col)]
+
+    district_name = pick(headers, r"行政轄區", r"^town$", r"^Dist$", r"區域")
+    d_raw = raw[headers.index(district_name)] if district_name else None
+
+    select = f'SELECT "{a_raw}", "{b_raw}"' + (f', "{d_raw}"' if d_raw else "")
+    rows = []
+    kept = 0
+    for record in conn.execute(select + f' FROM "{table}"'):
+        point = normalise_point(record[0], record[1])
+        if not point:
+            continue
+        district = record[2] if d_raw and len(record) > 2 else None
+        rows.append((point[0], point[1], guess_city_from_name(table), district, f"table:{table}"))
+        kept += 1
+        if len(rows) >= 50000:
+            cursor.executemany("INSERT INTO streetlights VALUES (?,?,?,?,?)", rows)
+            rows = []
+    if rows:
+        cursor.executemany("INSERT INTO streetlights VALUES (?,?,?,?,?)", rows)
+    return kept
+
+
+# ---------------------------------------------------------
+# main
+# ---------------------------------------------------------
+
+CELL_DEG = 0.01
+
+
+def label_cities(conn, cursor):
+    """Accident rows carry a full address, streetlight rows often do not.
+    Build a coarse grid from the accidents and copy the city name across."""
+    grid = {}
+    for lat, lon, city in cursor.execute(
+            "SELECT lat, lon, city FROM accidents WHERE city IS NOT NULL"):
+        key = (int(lat / CELL_DEG), int(lon / CELL_DEG))
+        bucket = grid.setdefault(key, {})
+        bucket[city] = bucket.get(city, 0) + 1
+
+    best = {k: max(v, key=v.get) for k, v in grid.items()}
+
+    updates = []
+    for rowid, lat, lon in cursor.execute(
+            "SELECT rowid, lat, lon FROM streetlights"):
+        key = (int(lat / CELL_DEG), int(lon / CELL_DEG))
+        city = best.get(key)
+        if city:
+            updates.append((city, rowid))
+
+    cursor.executemany("UPDATE streetlights SET city = ? WHERE rowid = ?", updates)
+    print(f"  city labels applied to {len(updates):,} streetlights")
+
+
+def build_coverage(cursor):
+    """A route is only 'outside the data' if its own 1 km cell is empty.
+    A single min/max rectangle would wrongly cover every gap in between."""
+    cursor.execute("DROP TABLE IF EXISTS coverage_cells")
+    cursor.execute("CREATE TABLE coverage_cells (kind TEXT, cell TEXT)")
+
+    sources = {
+        "streetlights": "SELECT lat, lon FROM streetlights",
+        "stores": "SELECT latitude, longitude FROM convenience_stores",
+        "accidents": "SELECT lat, lon FROM accidents",
+    }
+
+    for kind, query in sources.items():
+        cells = set()
+        try:
+            rows = cursor.execute(query).fetchall()
+        except sqlite3.Error:
+            continue
+        for lat, lon in rows:
+            if lat is None or lon is None:
+                continue
+            cells.add(f"{int(float(lat) / CELL_DEG)}:{int(float(lon) / CELL_DEG)}")
+        cursor.executemany(
+            "INSERT INTO coverage_cells VALUES (?, ?)",
+            [(kind, c) for c in cells])
+        print(f"  coverage {kind}: {len(cells):,} cells (~1 km each)")
+
+    cursor.execute("CREATE INDEX idx_cov ON coverage_cells(kind)")
+
+
+def main():
+    if not os.path.exists(DB_PATH):
+        sys.exit(f"Database not found: {DB_PATH}")
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS streetlights")
+    cursor.execute("DROP TABLE IF EXISTS accidents")
+    cursor.execute("""
+        CREATE TABLE streetlights (
+            lat REAL, lon REAL, city TEXT, district TEXT, source TEXT)
+    """)
+    cursor.execute("""
+        CREATE TABLE accidents (
+            lat REAL, lon REAL, date TEXT, time TEXT, location TEXT,
+            category TEXT, dead INTEGER, injured INTEGER,
+            is_pedestrian INTEGER, city TEXT, source TEXT)
+    """)
+
+    # --- 1. existing TablePlus tables (e.g. the Taichung district imports)
+    existing = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")]
+    for table in existing:
+        if table in ("streetlights", "accidents", "convenience_stores"):
+            continue
+        try:
+            n = ingest_existing_table(conn, cursor, table)
+        except sqlite3.Error:
+            n = 0
+        if n:
+            print(f"  table {table}: {n:,} streetlights")
+
+    # --- 2. every CSV in this folder
+    for name in sorted(os.listdir(HERE)):
+        if not name.lower().endswith(".csv"):
+            continue
+        path = os.path.join(HERE, name)
+        headers = read_header(path)
+        if is_accident_table(headers):
+            n = ingest_accident_csv(path, cursor)
+            print(f"  {name}: {n:,} accidents")
+        elif is_streetlight_table(headers, name):
+            n = ingest_streetlight_csv(path, cursor)
+            print(f"  {name}: {n:,} streetlights")
+        else:
+            print(f"  {name}: skipped (no usable columns)")
+
+    # --- 3. convenience stores: copy whatever Taipei table exists
+    store_table = next((t for t in existing if "convenience" in t.lower()), None)
+    if store_table:
+        cursor.execute("DROP TABLE IF EXISTS convenience_stores")
+        cursor.execute(
+            f'CREATE TABLE convenience_stores AS SELECT * FROM "{store_table}"')
+        print(f"  convenience_stores copied from {store_table}")
+
+    # --- 4. label cities using the nationwide accident locations as a lookup grid
+    label_cities(conn, cursor)
+
+    # --- 5. coverage cells: which ~1 km squares actually contain data
+    build_coverage(cursor)
+
+    # --- 6. de-duplicate and index
+    cursor.execute("""
+        DELETE FROM streetlights WHERE rowid NOT IN
+        (SELECT MIN(rowid) FROM streetlights GROUP BY ROUND(lat,6), ROUND(lon,6))
+    """)
+    cursor.execute("CREATE INDEX idx_light_pos ON streetlights(lat, lon)")
+    cursor.execute("CREATE INDEX idx_acc_pos ON accidents(lat, lon)")
+    cursor.execute("CREATE INDEX idx_acc_ped ON accidents(is_pedestrian)")
+
+    conn.commit()
+
+    lights = cursor.execute("SELECT COUNT(*) FROM streetlights").fetchone()[0]
+    accs = cursor.execute("SELECT COUNT(*) FROM accidents").fetchone()[0]
+    print(f"\nDone. streetlights={lights:,}  accidents={accs:,}")
+    print("\nStreetlight coverage by city:")
+    for city, n in cursor.execute(
+            "SELECT COALESCE(city,'?'), COUNT(*) FROM streetlights "
+            "GROUP BY city ORDER BY 2 DESC"):
+        print(f"  {city}: {n:,}")
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()
