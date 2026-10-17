@@ -108,7 +108,12 @@ export const DEFAULT_CONFIG = {
   // still paired with 9 hand-placed mock points -- it would have
   // saturated to a 100 score on almost every real corridor, including
   // quiet residential ones, and provided no real discrimination.
-  idealConvenienceStoreDensity: 90,
+  //
+  // 2026-10 recalibrated 90 -> 28 (same as backend/nightSafety): across
+  // ~197,000 Taipei + New Taipei road points, P90 within 150 m is 28/km^2
+  // and no point reached 90, so 90 kept the store factor at 10-40 on nearly
+  // every corridor and dragged walking totals down.
+  idealConvenienceStoreDensity: 28,
 };
  
 function clamp(value, min, max) {

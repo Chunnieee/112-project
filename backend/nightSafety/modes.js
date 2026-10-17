@@ -23,6 +23,7 @@ import { roadsNearRoute } from "./roadNetwork.js";
 import { prepareRoute, countPointsNearRoute, findPointsNearRoute, calculateBufferAreaKm2, weightedCount } from "./pedestrianSafety/routeAnalysis.js";
 import { accidentsInBox, FLAGS, yearsSpan, meta as accidentMeta, available as vehicleDataAvailable } from "./accidentIndex.js";
 import { realStreetlights, applyCoverage, TAIWAN_COUNTIES } from "./nationalData.js";
+import { recencyWeight, recencyWindow } from "./recency.js";
 
 export const MODES = {
   walk: {
@@ -126,8 +127,10 @@ export function scoreVehicleRoute(route, modeKey, bufferRadius) {
   const nearLights = keep(findPointsNearRoute(lights, routeInfo, searchRadius));
   const nLights = nearLights.length;
   // Score uses the distance-weighted count (same rule as walking).
-  const accWeighted = weightedCount(nearAcc, radius);
-  const accidentScore = calculatePedestrianAccidentScore(accWeighted, area, yearsSpan, cfg);
+  // 時間衰減：越舊的事故權重越低（recency.js），分母用同一衰減下的有效年數
+  const win = recencyWindow(accidentMeta?.dateRange);
+  const accWeighted = weightedCount(nearAcc, radius, win ? (p) => recencyWeight(p.date, win.endMs) : null);
+  const accidentScore = calculatePedestrianAccidentScore(accWeighted, area, win ? win.effYears : yearsSpan, cfg);
   const streetlightScore = calculateStreetlightScore(nLights, area, cfg);
   const w = mode.weights;
   const final = (accidentScore * w.accident + streetlightScore * w.streetlight) / (w.accident + w.streetlight);
@@ -170,7 +173,8 @@ export function scoreVehicleRoute(route, modeKey, bufferRadius) {
       latitude: a.latitude,
       longitude: a.longitude,
       date: a.date,
-      location: `涉入:${a.involved}`,
+      location: a.location || "", // 發生地點（資料庫有；舊的 .bin 檔沒有地點文字）
+      involved: a.involved || "",
       severity: a.severity,
       distanceMeters: a.distanceMeters,
     })),

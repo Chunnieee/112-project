@@ -6,6 +6,8 @@ services/valhalla/logs/
 services/valhalla/__pycache__/
 backend/nightSafety/pedestrianSafety/data/osmRoadCache/
 backend/nightSafety/database/*.db*
+database/*.db*
+backend/nightSafety/database/db-location.txt
 backend/node_modules/
 frontend/node_modules/
 

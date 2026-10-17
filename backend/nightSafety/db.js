@@ -20,12 +20,31 @@
 //                      use the original JSON/binary files (for comparing
 //                      results, or rolling back without deleting anything).
 
-import { existsSync, statSync } from "node:fs";
+import "../loadEnv.js"; // 讓 check_database.mjs 單獨執行時也讀得到 .env
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, "database", "pedestrian_safety.db");
+// 資料庫位置（依序）：
+//   1. .env 的 PEDESTRIAN_DB_PATH
+//   2. database/db-location.txt 第一行（資料庫放在專案外時用，只在這台電腦有效）
+//   3. nightSafety/database/pedestrian_safety.db
+//   4. 專案根目錄的 database/pedestrian_safety.db
+function locationFromFile() {
+  try {
+    const line = readFileSync(path.join(__dirname, "database", "db-location.txt"), "utf8")
+      .split(/\r?\n/).map((x) => x.trim()).find((x) => x && !x.startsWith("#"));
+    return line ? line.replace(/^"(.*)"$/, "$1") : null;
+  } catch { return null; }
+}
+const DB_CANDIDATES = [
+  path.join(__dirname, "database", "pedestrian_safety.db"),
+  path.join(__dirname, "..", "..", "database", "pedestrian_safety.db"),
+];
+const DB_PATH = path.resolve(
+  process.env.PEDESTRIAN_DB_PATH || locationFromFile() || DB_CANDIDATES.find((p) => existsSync(p)) || DB_CANDIDATES[0]
+);
 
 // Keep this in sync with SCHEMA_VERSION in database/build_database.py.
 const SCHEMA_VERSION = "1";
@@ -47,7 +66,7 @@ export let dbMetadata = {};
 if (mode === "json") {
   // Explicitly disabled -- don't even try to open the file.
 } else if (!existsSync(DB_PATH)) {
-  fail("Missing database/pedestrian_safety.db (build it with: python database/build_database.py)");
+  fail(`Missing ${DB_PATH} (build it with: python database/build_database.py, or set PEDESTRIAN_DB_PATH)`);
 } else {
   try {
     // Dynamic import so a missing `better-sqlite3` install (e.g. before the
@@ -91,6 +110,7 @@ if (mode === "json") {
           schemaVersion: metadata.schema_version || null,
         };
         available = true;
+        console.log(`[db] 使用資料庫 ${DB_PATH}（${dbStatus.sizeMB} MB，建立於 ${dbStatus.builtAt || "?"}）`);
       }
     }
   } catch (err) {
