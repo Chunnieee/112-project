@@ -7,11 +7,8 @@ import { createAuthRouter } from "./authStore.js";
 import { createNavigationRouter } from "./navigationFeatures.js";
 import { createMapTilesRouter } from "./googleTiles.js";
 import { assessHistoricalRisk } from "./riskEngine.js";
-<<<<<<< HEAD
 import { assessAndRecordUncoveredPriorV9 } from "./uncoveredPriorV9.js";
-=======
 import { registerSafetyRoutes } from "./safeRouteModel.js";
->>>>>>> 5523ff10dd0f8d31d6e5fc9014333c92026a66ae
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
 import { loadRouteVdObservations } from "./tdxVdRouteEngine.js";
 import {
@@ -7943,6 +7940,14 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "../frontend/index.html"));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, (err) => {
+  if (err) {
+    // Express 5 passes listen errors here; without this the process printed
+    // "running" and then exited silently when the port was already taken.
+    console.error(err.code === "EADDRINUSE"
+      ? `Port ${PORT} is already in use. Stop the other server (or change PORT in .env) and try again.`
+      : `Failed to start backend: ${err.message}`);
+    process.exit(1);
+  }
   console.log(`Backend running at http://localhost:${PORT}`);
 });

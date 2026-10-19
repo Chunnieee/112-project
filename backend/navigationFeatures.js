@@ -58,13 +58,24 @@ export function evaluateNavigation(plan, counts, participant, selectedKey = null
   let eligible = engineRows.filter(r => r.eligible);
   let recommended = null;
   if (plan.distribution && eligible.length) {
-    // Stable per-device draw; refreshes do not repeatedly roll a new recommendation.
-    const draw = parseInt(hash(`${participant}:${plan.journey}`).slice(0, 12), 16) / 0x1000000000000;
-    let cumulative = 0;
-    recommended = eligible.find(r => { cumulative += r.probability; return draw < cumulative; }) ?? eligible.at(-1);
+    // Same trip at the same moment → same recommendation on every device (desktop and mobile):
+    // take the eligible route with the highest distribution share; ties go to the faster route.
+    // Load balancing still works over time because the shares shift as the recent choice counts change.
+    recommended = eligible.reduce((best, r) =>
+      r.probability > best.probability + 1e-9 || (Math.abs(r.probability - best.probability) <= 1e-9 && r.eta < best.eta) ? r : best);
   } else if (!plan.distribution && plan.night && scored.length) {
     const winner = [...scored].sort((a,b) => b.safety.score-a.safety.score || a.expectedMin-b.expectedMin)[0];
     recommended = { id: winner.key };
+  }
+  // No route passed both limits (within 5 safety points of the best AND at most 5 min slower than the fastest),
+  // e.g. the fast route is much less safe and the safe route is 6 min slower. Never leave the user without a
+  // recommendation: fall back to the lowest combined cost (time + night risk + load), the same formula as above.
+  let fallback = false;
+  const pool = plan.night ? scored : plan.routes;
+  if (!recommended && pool.length) {
+    const total = r => routeLab.cost({ eta: r.expectedMin, risk: plan.night ? 100 - r.safety.score : 0, capacity: 20 }, counts[r.key] || 0, config).total;
+    const winner = pool.reduce((best, r) => total(r) < total(best) - 1e-9 || (Math.abs(total(r) - total(best)) <= 1e-9 && r.expectedMin < best.expectedMin) ? r : best);
+    recommended = { id: winner.key }; fallback = true;
   }
   const rows = plan.routes.map(r => {
     const e = engineRows.find(e => e.id === r.key);
@@ -88,6 +99,7 @@ export function evaluateNavigation(plan, counts, participant, selectedKey = null
       else if (!e.eligible) reasons.push('超過可接受的額外 5 分鐘，未列入分流推薦');
     }
     if (plan.routes.length === 1) reasons.push('目前只有一條候選路線，尚無替代路線可分流');
+    if (fallback && recommended?.id === r.key) reasons.push('沒有路線同時符合「安全分數相差 5 分內」與「最多多 5 分鐘」，改依時間與安全的綜合成本推薦');
     return { index: r.index, key: r.key, label: r.label, safety: r.safety ?? null,
       count: counts[r.key] || 0, recommended: recommended?.id === r.key,
       selected: selectedKey === r.key, reasons,

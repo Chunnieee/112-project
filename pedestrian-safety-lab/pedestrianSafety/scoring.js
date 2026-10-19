@@ -24,6 +24,8 @@
  
 import { configForRadius } from "./radiusThresholds.js";
 import { buildAttribution } from "./roadAttribution.js";
+import { recencyWeight, recencyWindow } from "../recency.js";
+import { meta as accidentDatasetMeta } from "../accidentIndex.js";
 import {
   prepareRoute,
   countPointsNearRoute,
@@ -109,10 +111,16 @@ export const DEFAULT_CONFIG = {
   // saturated to a 100 score on almost every real corridor, including
   // quiet residential ones, and provided no real discrimination.
   //
-  // 2026-10 recalibrated 90 -> 28 (same as backend/nightSafety): across
-  // ~197,000 Taipei + New Taipei road points, P90 within 150 m is 28/km^2
-  // and no point reached 90, so 90 kept the store factor at 10-40 on nearly
-  // every corridor and dragged walking totals down.
+  // 2026-10 recalibrated 90 -> 28. Checked against ~197,000 road sample
+  // points in Taipei + New Taipei (streetlight / accident locations deduped
+  // to 40 m, same sampling idea as scripts/calibrate-modes.mjs): within
+  // 150 m, the median road point has 0 stores, P75 = 14/km^2, P90 = 28/km^2,
+  // and NO point reached 90 -- so the store factor sat at 10-40 on nearly
+  // every corridor and dragged walking totals into the 40s. 28 = the 90th
+  // percentile of road points, i.e. "more stores than 9 in 10 roads" earns a
+  // full score; along a 300 m-wide corridor that is ~8 stores per km walked
+  // (one every ~120 m). Same percentile approach as the accident and
+  // streetlight thresholds above.
   idealConvenienceStoreDensity: 28,
 };
  
@@ -256,13 +264,18 @@ export function analyzePedestrianRouteSafety(
   config = configForRadius(config, radius, "walk");
 
   const pedestrianOnlyAccidents = filterPedestrianAccidents(accidentData);
-  const accidentDataYearsSpan = computeAccidentDataYearsSpan(accidentData);
+  // 資料年數：用整份事故資料的期間（2021～2025），不是沿線事故的最早～最晚日期
+  // （沿線事故少時，後者會把期間算短、把每年事故密度高估）。
+  // 加上時間衰減：越舊的事故權重越低，分母改成同一衰減下的「有效年數」。
+  const win = recencyWindow(accidentDatasetMeta?.dateRange);
+  const accidentDataYearsSpan = win ? win.effYears : computeAccidentDataYearsSpan(accidentData);
+  const timeWeight = win ? (p) => recencyWeight(p.date, win.endMs) : null;
 
   // pedestrianAccidents = plain count (shown to the user); the SCORE uses
   // the distance-weighted count (accidentDistanceWeight in routeAnalysis.js).
   const nearAccidents = keep(findPointsNearRoute(pedestrianOnlyAccidents, routeInfo, searchRadius));
   const pedestrianAccidents = nearAccidents.length;
-  const accidentWeightedCount = weightedCount(nearAccidents, radius);
+  const accidentWeightedCount = weightedCount(nearAccidents, radius, timeWeight);
   const nearLights = keep(findPointsNearRoute(streetlightData, routeInfo, searchRadius));
   const nearStores = keep(findPointsNearRoute(convenienceStoreData, routeInfo, searchRadius));
   const streetlights = nearLights.length;
