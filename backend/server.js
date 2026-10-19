@@ -1,5 +1,7 @@
 import {
   createRouteHash,
+  saveRouteSectionMapping,
+  getRouteSectionMapping,
 } from "./historicalDb.js";
 import dotenv from "dotenv";
 
@@ -7,6 +9,7 @@ dotenv.config({
   override: true,
 });
 import express from "express";
+import { createNavigationRouter } from "./navigationFeatures.js";
 import { assessHistoricalRisk } from "./riskEngine.js";
 import { assessAndRecordUncoveredPriorV9 } from "./uncoveredPriorV9.js";
 import { buildTdxRoadIndex, buildTdxVdIndex, calculateTdxHybridEta } from "./tdxEtaEngine.js";
@@ -14,6 +17,7 @@ import { loadRouteVdObservations } from "./tdxVdRouteEngine.js";
 import {
   resolvePlaceUniversal,
   reverseGeocodeCoordinate,
+  suggestPlaces,
 } from "./placeSearchEngine.js";
 import { getValhallaRoutes } from "./valhallaClient.js";
 import cors from "cors";
@@ -649,6 +653,7 @@ const limiter = rateLimit({
 });
 
 app.use("/api", limiter);
+app.use("/api/navigation", createNavigationRouter());
 
 /*
  * Lightweight polling endpoint for the frontend.
@@ -1238,6 +1243,85 @@ app.get("/api/eta-calibration", (req, res) => {
 // TDX-only smart geocoding.
 // Search order: raw coordinates -> TDX rail/metro station -> TDX Advanced Geocoding.
 // No Google billing and no public Nominatim dependency.
+
+// EXACT_GITHUB_DROPDOWN_09F5FE2
+// Exact autocomplete endpoint extracted from Git commit 09f5fe2.
+// It is isolated under its own URL so current backend logic is untouched.
+
+app.get("/api/autocomplete-github-09f5fe2", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+
+  if (q.length < 2) {
+    return res.json({ suggestions: [] });
+  }
+
+  try {
+    const photonRes = await fetchWithTimeout(
+      `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&lang=zh&limit=7&bbox=120.0,21.5,122.1,25.5`,
+      {},
+      5000
+    );
+    const data = await photonRes.json();
+
+    const suggestions = (data.features || [])
+      .filter(f => {
+        const lat = f.geometry.coordinates[1];
+        const lon = f.geometry.coordinates[0];
+        return lat >= 21 && lat <= 27 && lon >= 118 && lon <= 124;
+      })
+      .map(f => {
+        const p = f.properties;
+        const parts = [p.name, p.district, p.city || p.county]
+          .filter(Boolean)
+          .filter((v, i, arr) => arr.indexOf(v) === i); // 去重
+        return {
+          displayName: parts.join("，"),
+          lat: f.geometry.coordinates[1],
+          lon: f.geometry.coordinates[0],
+          type: p.type || "place",
+        };
+      })
+      .filter(s => s.displayName);
+
+    res.json({ suggestions });
+
+  } catch (e) {
+    res.json({ suggestions: [] });
+  }
+});
+
+
+// SafeFlow unified grounded suggestions. Existing legacy URLs remain intact.
+app.get("/api/autocomplete", async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (!query) return res.json({ suggestions: [] });
+  try {
+    const suggestions = await suggestPlaces({
+      query, nearLat: req.query.nearLat, nearLon: req.query.nearLon,
+      limit: Math.min(10, Math.max(1, Number(req.query.limit) || 8)),
+    });
+    return res.json({ status: "ok", query, suggestions });
+  } catch (error) {
+    console.warn("[autocomplete] provider failure:", error.message);
+    return res.json({ status: "degraded", query, suggestions: [] });
+  }
+});
+
+app.get("/api/place-suggest", async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (!query) return res.json({ status: "ok", query, suggestions: [] });
+  try {
+    const suggestions = await suggestPlaces({
+      query, nearLat: req.query.nearLat, nearLon: req.query.nearLon,
+      limit: Math.min(10, Math.max(1, Number(req.query.limit) || 8)),
+    });
+    return res.json({ status: "ok", query, suggestions });
+  } catch (error) {
+    console.warn("[place-suggest] provider failure:", error.message);
+    return res.json({ status: "degraded", query, suggestions: [] });
+  }
+});
+
 app.get("/api/smart-geocode", async (req, res) => {
   try {
     const payload =
@@ -1255,7 +1339,144 @@ app.get("/api/smart-geocode", async (req, res) => {
           req.query.nearLon
       });
 
-    res.json(payload);
+    // SAFEFLOW_WEAK_TO_SUGGEST_V1
+    // Strong results are returned unchanged.
+    // Weak results trigger grounded Place Suggest comparison.
+    const current = payload?.result;
+    const weak = !current ||
+      current.approximate === true ||
+      current.needsReview === true ||
+      current.confidence === "low" ||
+      payload?.validation?.accepted === false;
+
+    if (!weak) {
+      return res.json(payload);
+    }
+
+    try {
+      const raw = String(req.query.q || "").trim();
+      const alternatives = await suggestPlaces({
+        query: raw,
+        nearLat: req.query.nearLat,
+        nearLon: req.query.nearLon,
+        limit: 8,
+      });
+
+      const grounded = alternatives.filter(c => {
+        const lat = Number(c.lat);
+        const lon = Number(c.lon);
+        return Number.isFinite(lat) &&
+          Number.isFinite(lon) &&
+          lat >= 21.5 && lat <= 26.5 &&
+          lon >= 119 && lon <= 123;
+      });
+
+      // Prefer official address geocoding for addresses.
+      const addressLike =
+        /(?:路|街|大道|巷|弄).*\\d|\\d+號/u.test(raw);
+
+      const selected = addressLike
+        ? (grounded.find(c =>
+            String(c.source || "").includes(
+              "TDX Advanced Address"
+            )
+          ) || grounded[0])
+        : grounded[0];
+
+      if (selected) {
+        // Retain the original result if the fallback is
+        // not demonstrably better. Never discard grounded
+        // evidence merely because confidence is low.
+        const oldName = String(
+          current?.displayName || ""
+        );
+        const newName = String(
+          selected.displayName || ""
+        );
+
+        const normalize = s => s
+          .toLowerCase()
+          .replace(/[\\s　臺台,，、()（）]/g, "");
+
+        const rawName = normalize(raw);
+        const newComparable = normalize(newName);
+        const oldComparable = normalize(oldName);
+
+        const relevant = rawName.length >= 2 &&
+          (newComparable.includes(rawName) ||
+           rawName.includes(newComparable));
+
+        const oldRelevant = rawName.length >= 2 &&
+          (oldComparable.includes(rawName) ||
+           rawName.includes(oldComparable));
+
+        const chooseFallback = !current ||
+          (relevant && !oldRelevant);
+
+        if (chooseFallback) {
+          return res.json({
+            ...payload,
+            status: "ok",
+            input: raw,
+            result: {
+              ...selected,
+              coordinatesGrounded: true,
+              confidence: "low",
+              approximate: true,
+              needsReview: true,
+            },
+            candidates: grounded,
+            source: selected.source,
+            fallback: true,
+            validation: {
+              ...(payload?.validation || {}),
+              accepted: true,
+              coordinatesGrounded: true,
+              aiGeneratedCoordinates: false,
+              taiwanOnly: true,
+            },
+          });
+        }
+      }
+
+      if (current) {
+        return res.json({
+          ...payload,
+          result: {
+            ...current,
+            approximate: true,
+            needsReview: true,
+            confidence: "low",
+          },
+          candidates: payload?.candidates || grounded,
+        });
+      }
+    } catch (fallbackError) {
+      console.warn(
+        "[weak-to-suggest]",
+        fallbackError.message
+      );
+      if (current) {
+        return res.json({
+          ...payload,
+          result: {
+            ...current,
+            approximate: true,
+            needsReview: true,
+            confidence: "low",
+          },
+        });
+      }
+    }
+
+    return res.json({
+      status: "no_grounded_match",
+      input: String(req.query.q || ""),
+      result: null,
+      candidates: [],
+      needsReview: true,
+      message: "目前找不到足夠可靠的地點座標。",
+    });
 
   } catch (error) {
 
@@ -1264,22 +1485,34 @@ app.get("/api/smart-geocode", async (req, res) => {
       error
     );
 
-    res
-      .status(
-        error?.status ||
-        500
-      )
-      .json({
-        error:
-          "Smart geocode failed",
-
-        detail:
-          error.message
+    try {
+      const alternatives = await suggestPlaces({
+        query: String(req.query.q || ""),
+        nearLat: req.query.nearLat, nearLon: req.query.nearLon, limit: 8,
       });
+      const best = alternatives.find(c =>
+        Number.isFinite(Number(c.lat)) && Number.isFinite(Number(c.lon)));
+      if (best) return res.json({
+        input: String(req.query.q || ""),
+        result: { ...best, coordinatesGrounded: true,
+          confidence: "low", approximate: true, needsReview: true },
+        candidates: alternatives, source: best.source || "Grounded suggestion",
+        validation: { accepted: true, coordinatesGrounded: true,
+          aiGeneratedCoordinates: false, taiwanOnly: true },
+        fallback: true,
+      });
+    } catch (fallbackError) {
+      console.warn("[smart-geocode fallback]", fallbackError.message);
+    }
+    return res.status(error?.status === 400 ? 400 : 200).json({
+      status: "no_grounded_match", input: String(req.query.q || ""),
+      result: null, candidates: [], needsReview: true,
+      message: "目前沒有足夠可靠的地點座標，請選擇其他搜尋名稱或完整地址。",
+    });
   }
 });
 // ── AUTOCOMPLETE（打字即時建議）──────────────────────
-app.get("/api/autocomplete", async (req, res) => {
+app.get("/api/autocomplete-legacy", async (req, res) => {
   const q = String(req.query.q || "").trim();
 
   if (q.length < 2) {
@@ -1475,7 +1708,7 @@ function autocompleteCandidate(
 }
 
 
-app.get("/api/place-suggest", async (req, res) => {
+app.get("/api/place-suggest-legacy", async (req, res) => {
   const query =
     String(
       req.query.q ||
@@ -4042,6 +4275,115 @@ app.get("/api/tdx-road-section-test", async (req, res) => {
 });
 
 
+
+/*
+ * SAFEFLOW_FINAL_PLACE_SEARCH_V1
+ *
+ * Last verified place-search pipeline.
+ *
+ * autocomplete:
+ *   Photon grounded results
+ *   + TDX station candidates
+ *   + shared candidate scoring
+ *
+ * full resolver:
+ *   text normalization
+ *   + grounded geographic providers
+ *   + city consistency / ranking
+ *
+ * AI is never allowed to invent coordinates.
+ */
+
+async function safeFlowPlaceSuggestions(req, res) {
+  try {
+    const rawLimit =
+      Number(req.query.limit || 7);
+
+    const limit =
+      Math.max(
+        1,
+        Math.min(
+          10,
+          Number.isFinite(rawLimit)
+            ? Math.round(rawLimit)
+            : 7
+        )
+      );
+
+    const suggestions =
+      await suggestPlaces({
+        query:
+          String(
+            req.query.q ||
+            ""
+          ).trim(),
+
+        nearLat:
+          req.query.nearLat ??
+          null,
+
+        nearLon:
+          req.query.nearLon ??
+          null,
+
+        limit
+      });
+
+    return res.json({
+      status: "ok",
+
+      suggestions,
+
+      count:
+        suggestions.length,
+
+      source:
+        "SafeFlow final grounded place search"
+    });
+
+  } catch (error) {
+
+    console.error(
+      "[place suggest]",
+      error
+    );
+
+    return res
+      .status(
+        error?.status ||
+        500
+      )
+      .json({
+        status:
+          "error",
+
+        suggestions:
+          [],
+
+        message:
+          error.message
+      });
+  }
+}
+
+
+/*
+ * Keep BOTH routes.
+ *
+ * Current/new frontend can use place-suggest.
+ * Older/current autocomplete UI remains compatible.
+ */
+
+app.get(
+  "/api/place-suggest",
+  safeFlowPlaceSuggestions
+);
+
+app.get(
+  "/api/autocomplete",
+  safeFlowPlaceSuggestions
+);
+
 app.get("/api/route", async (req, res) => {
   try {
     const { startLon, startLat, endLon, endLat } = req.query;
@@ -4847,7 +5189,7 @@ console.log(
           vdIndex,
 
           cityMatchThresholdKm:
-            0.05,
+            0.06,
 
           roadMatchThresholdKm:
             0.06,
@@ -5609,6 +5951,69 @@ console.log(
         ),
   }
 );
+
+
+
+// ROUTE_SECTION_CACHE_SAVE_V1
+//
+// Persist only a successful non-empty match.
+//
+// IMPORTANT:
+// Provider failure / quota exhaustion must NEVER overwrite
+// an older good route -> section mapping with an empty result.
+//
+if (
+  routeHash &&
+  matchedSectionsForRisk.length > 0
+) {
+  try {
+    const savedRouteSectionMap =
+      saveRouteSectionMapping({
+        routeHash,
+
+        route,
+
+        routingEngine:
+          route.routingEngine ||
+          route.raw?.routingEngine ||
+          "valhalla",
+
+        routeDistanceKm,
+
+        matchedSections:
+          matchedSectionsForRisk,
+      });
+
+
+    console.log(
+      "[route section cache] SAVED",
+      {
+        route:
+          route.label,
+
+        routeHash:
+          routeHash.slice(
+            0,
+            16
+          ),
+
+        sections:
+          savedRouteSectionMap
+            .sectionCount,
+
+        source:
+          "live_tdx_match",
+      }
+    );
+  }
+
+  catch (error) {
+    console.warn(
+      "[route section cache] save failed:",
+      error.message
+    );
+  }
+}
 
 
 /*
@@ -6565,17 +6970,220 @@ const v9UncoveredPrior =
  * Old historical risk remains available
  * for P90 / reliability statistics.
  */
-const v9PreCalibrationExpectedMin =
+
+/*
+ * =========================================================
+ * ETA_REALWORLD_FUSION_V10
+ * =========================================================
+ *
+ * Objective:
+ *   Do not force TDX coverage to look high.
+ *   Instead compensate only the genuinely uncovered portion.
+ *
+ * Final pre-calibration ETA:
+ *
+ *   Valhalla baseline
+ *   + strict TDX positive live delay
+ *   + ONE best uncovered-road supplement
+ *
+ * The uncovered supplement is the MAX of:
+ *
+ *   1. V9 exact empirical uncovered prior
+ *   2. older historical route-gap evidence
+ *   3. traffic-signal expected delay on uncovered road share
+ *
+ * MAX is used rather than SUM to avoid double-counting the
+ * same urban congestion / intersection delay multiple times.
+ */
+
+const uncoveredCoverageRatioV10 =
+  Math.max(
+    0,
+    Math.min(
+      1,
+      1 - Number(tdxCoverageRatio || 0)
+    )
+  );
+
+
+const signalDiagnosticDelayMinV10 =
+  Number(
+    signalCorrection?.delayMin ||
+    0
+  );
+
+
+/*
+ * TDX TravelTime on matched sections already contains much of
+ * the real movement / junction cost on those covered pieces.
+ *
+ * Therefore signal delay is applied ONLY to the uncovered share.
+ */
+const rawSignalUncoveredSupplementMinV10 =
+  signalDiagnosticDelayMinV10 *
+  uncoveredCoverageRatioV10;
+
+
+/*
+ * Safety cap:
+ *
+ * Signal caches are a useful real-world correction but should
+ * never be allowed to explode ETA because of duplicate signals
+ * or imperfect map geometry.
+ *
+ * Maximum signal supplement =
+ *   90% of the original router ETA
+ *
+ * This still allows a badly underestimated 16-minute urban trip
+ * to gain ~14 minutes, while preventing absurd corrections.
+ */
+const signalSupplementCapMinV10 =
+  Math.max(
+    0,
+    Number(baseRouterMin || 0) * 0.90
+  );
+
+
+const signalUncoveredSupplementMinV10 =
+  signalCorrection?.cacheAvailable &&
+  Number(signalCorrection?.signalCount || 0) > 0
+
+    ? Math.max(
+        0,
+        Math.min(
+          rawSignalUncoveredSupplementMinV10,
+          signalSupplementCapMinV10
+        )
+      )
+
+    : 0;
+
+
+/*
+ * V9 exact uncovered empirical prior.
+ */
+const v9SupplementMinV10 =
+  Math.max(
+    0,
+    Number(
+      v9UncoveredPrior?.supplementMin ||
+      0
+    )
+  );
+
+
+/*
+ * Older Historical-gap model is retained as a fallback.
+ *
+ * It is NOT added on top of V9/signal delay.
+ */
+const historicalGapSupplementMinV10 =
+  Math.max(
+    0,
+    Number(
+      historicalGapCorrection?.supplementMin ||
+      0
+    )
+  );
+
+
+/*
+ * Choose the strongest available evidence.
+ *
+ * Do not sum them:
+ * signal / historical / V9 frequently describe overlapping
+ * causes of the same uncovered urban delay.
+ */
+const uncoveredSupplementMinV10 =
+  Math.max(
+    signalUncoveredSupplementMinV10,
+    v9SupplementMinV10,
+    historicalGapSupplementMinV10
+  );
+
+
+const realWorldPreCalibrationExpectedMin =
   Math.max(
     baseRouterMin,
 
     liveExpectedMin +
-      Number(
-        v9UncoveredPrior
-          .supplementMin ||
-        0
-      )
+      uncoveredSupplementMinV10
   );
+
+
+console.log(
+  "[ETA V10 fusion]",
+  {
+    route: route.label,
+
+    baselineMin:
+      roundNumber(
+        baseRouterMin,
+        2
+      ),
+
+    liveExpectedMin:
+      roundNumber(
+        liveExpectedMin,
+        2
+      ),
+
+    liveCoveragePct:
+      roundNumber(
+        Number(tdxCoverageRatio || 0) * 100,
+        1
+      ),
+
+    uncoveredPct:
+      roundNumber(
+        uncoveredCoverageRatioV10 * 100,
+        1
+      ),
+
+    signalCount:
+      Number(
+        signalCorrection?.signalCount ||
+        0
+      ),
+
+    signalDiagnosticMin:
+      roundNumber(
+        signalDiagnosticDelayMinV10,
+        2
+      ),
+
+    signalUncoveredSupplementMin:
+      roundNumber(
+        signalUncoveredSupplementMinV10,
+        2
+      ),
+
+    v9SupplementMin:
+      roundNumber(
+        v9SupplementMinV10,
+        2
+      ),
+
+    historicalGapSupplementMin:
+      roundNumber(
+        historicalGapSupplementMinV10,
+        2
+      ),
+
+    chosenUncoveredSupplementMin:
+      roundNumber(
+        uncoveredSupplementMinV10,
+        2
+      ),
+
+    preCalibrationExpectedMin:
+      roundNumber(
+        realWorldPreCalibrationExpectedMin,
+        2
+      )
+  }
+);
+
 
 
 console.log(
@@ -6663,26 +7271,47 @@ const empiricalEtaCalibration =
     departureTime:
       requestedDepartureTime,
     preCalibrationExpectedMin:
-      v9PreCalibrationExpectedMin,
+      realWorldPreCalibrationExpectedMin,
   });
+
 
 expectedMin =
   Math.max(
     baseRouterMin,
-    v9PreCalibrationExpectedMin +
-      Number(empiricalEtaCalibration.correctionMin || 0)
+
+    realWorldPreCalibrationExpectedMin +
+      Number(
+        empiricalEtaCalibration.correctionMin ||
+        0
+      )
   );
+
 
 console.log("[eta final audit]", {
   route: route.label,
   baseRouterMin: roundNumber(baseRouterMin, 2),
   liveExpectedMin: roundNumber(liveExpectedMin, 2),
   historicalSupplementMin: roundNumber(
-    v9UncoveredPrior.supplementMin || 0,
+    uncoveredSupplementMinV10,
+    2
+  ),
+
+  signalUncoveredSupplementMin: roundNumber(
+    signalUncoveredSupplementMinV10,
+    2
+  ),
+
+  v9SupplementMin: roundNumber(
+    v9SupplementMinV10,
+    2
+  ),
+
+  historicalGapFallbackMin: roundNumber(
+    historicalGapSupplementMinV10,
     2
   ),
   preCalibrationExpectedMin: roundNumber(
-    v9PreCalibrationExpectedMin,
+    realWorldPreCalibrationExpectedMin,
     2
   ),
   learnedResidualCorrectionMin: roundNumber(
@@ -6821,7 +7450,7 @@ try {
           city: etaOriginJurisdiction,
           departureTime: requestedDepartureTime,
           preCalibrationExpectedMin:
-            roundNumber(preCalibrationExpectedMin, 2),
+            roundNumber(realWorldPreCalibrationExpectedMin, 2),
           matchedCoverageRatio:
             roundNumber(tdxCoverageRatio, 4),
           travelTimeCoverageRatio:
@@ -6953,7 +7582,7 @@ try {
 
         preCalibrationExpectedMin:
           roundNumber(
-            v9PreCalibrationExpectedMin,
+            realWorldPreCalibrationExpectedMin,
             2
           ),
 

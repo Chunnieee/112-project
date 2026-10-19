@@ -1707,6 +1707,58 @@ function scoreCandidate(
     effectiveCityAdjustment;
 
 
+  // SAFEFLOW_RAW_ENTITY_IDENTITY_V1
+  // Prefer the user's original place name over AI-added categories.
+  // Only penalize Chinese-labeled POIs; English canonical
+  // names retain the existing multilingual provider evidence.
+  if (placeType === "poi") {
+    const rawCore = stripCityMentions(
+      normalizeComparable(rawQuery || "")
+    );
+    const name = normalizeComparable(
+      candidate?.displayName || ""
+    );
+    const coreHasHan = /[\u3400-\u9fff]{2,}/u.test(rawCore);
+    const nameHasHan = /[\u3400-\u9fff]/u.test(name);
+
+    if (
+      coreHasHan &&
+      nameHasHan &&
+      !name.includes(rawCore) &&
+      !(
+        name.length >= 3 &&
+        rawCore.endsWith(name) &&
+        /mall|department_store|supermarket|retail/.test(
+          [
+            candidate?.locationType,
+            ...(candidate?.rawTypes || [])
+          ].join(" ").toLowerCase()
+        )
+      )
+    ) {
+      score -= 220;
+    }
+  }
+
+  // SAFEFLOW_VENUE_IDENTITY_V3
+  // Navigable retail destinations outrank generic land-use
+  // polygons when the original query is an untyped POI.
+  if (placeType === "poi") {
+    const types = [
+      candidate?.locationType,
+      ...(candidate?.rawTypes || [])
+    ].join(" ").toLowerCase();
+
+    if (/mall|department_store/.test(types)) {
+      score += 45;
+    }
+
+    if (/landuse/.test(types) &&
+        /commercial|construction|industrial/.test(types)) {
+      score -= 25;
+    }
+  }
+
   score += proximityBonus(candidate, nearLat, nearLon);
 
   if (
@@ -1773,6 +1825,34 @@ function scoreCandidate(
         0,
         10 - rank
       );
+  }
+
+  // SAFEFLOW_POI_ENTITY_RANK_V2
+  // Do not reward generic substring matches:
+  // "政大威秀" is not the university "政大".
+  if (placeType === "poi") {
+    const requested = String(rawQuery || "");
+    const name = String(candidate?.displayName || "");
+    const types = [
+      candidate?.locationType,
+      ...(candidate?.rawTypes || []),
+    ].join(" ");
+
+    const accessory =
+      /停車場|停車位|影城|電影院|美食街|售票處|服務中心|parking|cinema|movie theater/i;
+
+    if (accessory.test(name + " " + types) &&
+        !accessory.test(requested)) {
+      score -= 180;
+    }
+
+    const hotel =
+      /飯店|酒店|旅館|旅店|民宿|洲際酒店|hotel|hostel|motel|resort|guest_house|intercontinental/i;
+
+    if (hotel.test(name + " " + types) &&
+        !hotel.test(requested)) {
+      score -= 180;
+    }
   }
 
   return score;
@@ -5430,6 +5510,83 @@ function candidateBatchHasStrongCandidate(
   const second =
     ranked[1] || null;
 
+  // SAFEFLOW_RAW_ENTITY_IDENTITY_V1
+  // A high score from city/category words is not entity proof.
+  if (placeType === "poi") {
+    const rawCore = stripCityMentions(
+      normalizeComparable(rawQuery || "")
+    );
+    const name = normalizeComparable(
+      best.candidate?.displayName || ""
+    );
+
+    if (
+      /[\u3400-\u9fff]{2,}/u.test(rawCore) &&
+      /[\u3400-\u9fff]/u.test(name) &&
+      !name.includes(rawCore)
+    ) {
+      return false;
+    }
+
+    // Short POI aliases with multiple matching entities
+    // need user confirmation, not automatic high confidence.
+    if (rawCore.length <= 2 && rawCore.length >= 2) {
+      const matchingNames = new Set(
+        ranked
+          .map(item => normalizeComparable(
+            item.candidate?.displayName || ""
+          ))
+          .filter(n => n.includes(rawCore))
+      );
+      if (matchingNames.size > 1) return false;
+    }
+  }
+
+  // SAFEFLOW_ENTITY_CONFIDENCE_GUARD_V1
+  // Provider rank is not proof of entity identity.
+  const requested = normalizeComparable(rawQuery);
+  const label = normalizeComparable(
+    best.candidate?.displayName || ""
+  );
+  const candidateTypes = [
+    best.candidate?.locationType,
+    ...(best.candidate?.rawTypes || []),
+  ].join(" ").toLowerCase();
+
+  const accessoryWords =
+    /停車場|停車位|影城|電影院|美食街|售票處|服務中心|parking|cinema|movie theater/i;
+
+  const requestedAccessory =
+    accessoryWords.test(requested);
+  const returnedAccessory =
+    accessoryWords.test(label) ||
+    /parking|cinema/.test(candidateTypes);
+
+  if (returnedAccessory && !requestedAccessory) {
+    return false;
+  }
+
+  const asksForHotel =
+    /飯店|酒店|旅館|旅店|民宿|hotel|hostel|resort|inn/i
+      .test(rawQuery);
+
+  const isHotel =
+    /hotel|hostel|motel|resort|guest_house/
+      .test(candidateTypes) ||
+    /飯店|酒店|旅館|intercontinental/i.test(
+      best.candidate?.displayName || ""
+    );
+
+  const nameMatches =
+    Boolean(requested && label &&
+      (label.includes(requested) ||
+       requested.includes(label)));
+
+  if (isHotel && !asksForHotel && !nameMatches) {
+    return false;
+  }
+
+
   /*
    * Explicit city conflict:
    * don't stop searching yet.
@@ -6350,7 +6507,18 @@ export async function resolvePlaceUniversal({
     };
   }
 
+  /*
+   * SAFEFLOW_SEARCH_CACHE_NAMESPACE_V2
+   *
+   * Search ranking / intent logic changed.
+   * Do not reuse old resolved-place winners such as:
+   *   台中勤美 -> InterContinental Taichung
+   *   板橋大遠百 -> 板橋大遠百停車場
+   *
+   * Old cache remains untouched on disk.
+   */
   const resolvedCacheKey =
+    "search-v5|" +
     resolvedPlaceCacheKey(
       rawQuery,
       nearLat,
@@ -7656,6 +7824,128 @@ export async function resolvePlaceUniversal({
   }
 
 
+  // SAFEFLOW_POI_NOMINATIM_FALLBACK_V1
+  // Only committed Smart Geocode searches reach this path.
+  // Public Nominatim must never be used for keystroke autocomplete.
+  if (detectedPlaceType === "poi") {
+    const rawCore = stripCityMentions(
+      normalizeComparable(rawQuery)
+    );
+
+    const hasMainEntity = search.candidates.some(c => {
+      const name = String(c?.displayName || "");
+      const normalizedName = normalizeComparable(name);
+      const accessory =
+        /停車場|停車位|影城|電影院|美食街|售票處|服務中心|parking|cinema|movie theater/i;
+
+      const requestedAccessory = accessory.test(rawQuery);
+      const isAccessory = accessory.test(name);
+
+      if (isAccessory && !requestedAccessory) return false;
+
+      // SAFEFLOW_CITY_AWARE_PROVIDER_FALLBACK_V4
+      // A matching chain name in another city is not
+      // evidence that the requested branch was found.
+      if (
+        cityHintInfo.strength === "explicit" &&
+        evaluateCityConsistency(
+          c,
+          cityHint,
+          cityHintInfo.strength
+        ).status === "conflict"
+      ) {
+        return false;
+      }
+
+      const normalizedAlias = normalizeComparable(
+        normalized.normalizedQuery || ""
+      );
+
+      return (
+        rawCore.length >= 2 &&
+        normalizedName.includes(rawCore)
+      ) || (
+        normalizedAlias.length >= 3 &&
+        normalizedName.includes(normalizedAlias)
+      );
+    });
+
+    if (!hasMainEntity) {
+      const result = await searchNominatimFallback({
+        // SAFEFLOW_SEARCH_RECOMMENDATIONS_V5
+        // Try the exact text, then a brand + city variant.
+        // For example:
+        // 新光三越台中中港店 -> 新光三越 台中
+        queries: (() => {
+          const cityPattern =
+            /台北|臺北|新北|桃園|新竹|苗栗|台中|臺中|彰化|南投|雲林|嘉義|台南|臺南|高雄|基隆|宜蘭|花蓮|台東|臺東/gu;
+
+          const cityMatch = rawQuery.match(cityPattern);
+          const cityText = cityMatch?.[0] || "";
+
+          const withoutCity = clean(
+            rawQuery.replace(cityPattern, "")
+          );
+
+          const withoutBranch = clean(
+            withoutCity.replace(
+              /[\u3400-\u9fff]{2}店$/u,
+              ""
+            )
+          );
+
+          const brand = withoutBranch.length >= 2
+            ? withoutBranch
+            : withoutCity;
+
+          const brandCity = brand && cityText
+            ? `${brand} ${cityText}`
+            : brand;
+
+          return [
+            rawQuery,
+            brandCity || normalized.normalizedQuery,
+          ].filter(Boolean);
+        })(),
+      });
+
+      const candidates = Array.isArray(result)
+        ? result
+        : Array.isArray(result?.candidates)
+          ? result.candidates
+          : [];
+
+      search.candidates = dedupeCandidates([
+        ...candidates,
+        ...search.candidates,
+      ]);
+
+      if (Array.isArray(result?.errors)) {
+        search.errors.push(...result.errors);
+      }
+
+      search.providers.nominatimPoiCandidates =
+        candidates.length;
+
+      console.log("[Nominatim POI fallback]", {
+        query: rawQuery,
+        candidates: candidates.length,
+      });
+    }
+  }
+
+  // SAFEFLOW_CITY_AWARE_PROVIDER_FALLBACK_V4
+  // After all grounded providers have been queried,
+  // discard candidates known to be in the wrong city.
+  // Unknown administrative metadata is not treated
+  // as proof of a city conflict.
+  // SAFEFLOW_SEARCH_RECOMMENDATIONS_V5
+  // Preserve grounded cross-city results as possible
+  // alternatives. The existing city-aware score still
+  // ranks matching cities ahead of conflicting ones.
+  // A conflicting result must be identified as a
+  // substitute, not silently treated as an exact branch.
+
   console.log(
     "[place providers]",
     search.providers
@@ -8081,7 +8371,8 @@ export async function suggestPlaces({
 
   const placeType = placeTypeFromText(q);
 
-  const [photonCandidates, stationCandidates] =
+  const isAddress = placeType === "address" || /(?:路|街|大道|巷|弄).*(?:\d+號|\d+巷|\d+弄)|\d+號/u.test(q);
+  const [photonCandidates, stationCandidates, addressCandidates] =
     await Promise.all([
       searchPhoton({
         query: q,
@@ -8104,9 +8395,14 @@ export async function suggestPlaces({
             .then((result) => result.candidates || [])
             .catch(() => [])
         : Promise.resolve([]),
+      isAddress
+        ? searchTdxAddressV3({ queries: [q], cityHint: cityInfo.cityHint })
+            .then(result => result.candidates || []).catch(() => [])
+        : Promise.resolve([]),
     ]);
 
   return dedupeCandidates([
+    ...addressCandidates,
     ...stationCandidates,
     ...photonCandidates,
   ])
@@ -8120,7 +8416,7 @@ export async function suggestPlaces({
         placeType,
         nearLat,
         nearLon,
-      }),
+      }) + (isAddress && addressCandidates.includes(candidate) ? 120 : 0),
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
