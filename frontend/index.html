@@ -292,6 +292,7 @@
 .detail-factor .factor-heading {font-weight:690;font-size:13px;}
 .detail-factor .factor-desc {font-size:10px;line-height:1.5;color:var(--muted);margin-top:5px;}
 .detail-factor .factor-grade {font-size:19px;font-weight:760;}
+.detail-factor .factor-grade.mid {color:var(--text);}
 .detail-factor .factor-grade.good {color:var(--low);}.detail-factor .factor-grade.warn {color:var(--mid);}
 .layer-help {font-size:10px;color:var(--text-2);line-height:1.6;}
 .map-layer-key {position:absolute;z-index:715;right:13px;bottom:11px;padding:8px 10px;background:color-mix(in srgb,var(--surface) 94%,transparent);border:1px solid var(--line-2);border-radius:10px;font-size:10px;color:var(--primary-text);display:none;gap:8px;align-items:center;}
@@ -756,6 +757,23 @@ button:focus:not(:focus-visible) {outline:none;}
 .safety-context {display:flex;gap:9px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border-radius:12px;border:1px solid var(--line-2);background:color-mix(in srgb,var(--primary) 6%,var(--surface-2));font-size:12.5px;line-height:1.7;color:var(--text-2);}
 .safety-context .icon {width:16px;height:16px;margin-top:3px;color:var(--primary-text);flex-shrink:0;}
 
+/* 安全排名與條件標籤 */
+.factor-tags {display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+.ftag {padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:650;border:1px solid transparent;}
+.ftag.good {color:var(--low);background:color-mix(in srgb,var(--low) 12%,transparent);}
+.ftag.mid {color:var(--text-2);background:color-mix(in srgb,var(--text-2) 10%,transparent);}
+.ftag.weak {color:var(--mid);background:color-mix(in srgb,var(--mid) 14%,transparent);}
+.safety-hero-main {display:flex;align-items:baseline;gap:8px;margin-top:10px;}
+.safety-hero-main strong {font-size:30px;font-weight:800;letter-spacing:-.02em;color:var(--primary-text);}
+.safety-hero-main span {font-size:13px;color:var(--text-2);}
+.pct-track {position:relative;height:8px;margin-top:12px;border-radius:8px;background:var(--line);overflow:hidden;}
+.pct-track i {position:absolute;left:0;top:0;bottom:0;border-radius:8px;background:var(--primary);}
+.pct-track b {position:absolute;top:0;bottom:0;width:2px;background:var(--surface);}
+.pct-scale {display:grid;grid-template-columns:30% 40% 30%;margin-top:4px;font-size:10.5px;color:var(--muted);}
+.pct-scale span:nth-child(2) {text-align:center;} .pct-scale span:last-child {text-align:right;}
+.safety-hero-note {margin:10px 0 0;font-size:11px;color:var(--muted);}
+.route-card .factor-tags {margin-top:9px;}
+
 /* 訂閱方案 */
 .account-menu .who .account-avatar {width:40px;height:40px;flex-shrink:0;display:grid;place-items:center;border:0;border-radius:50%;padding:0;background:var(--primary);color:var(--on-primary);font-size:15px;font-weight:750;text-align:center;cursor:pointer;transition:box-shadow .15s;}
 .account-menu .who .account-avatar:hover {background:var(--primary);}
@@ -870,7 +888,7 @@ button:focus:not(:focus-visible) {outline:none;}
   <header class="topbar">
     <button class="app-back" id="appBack" aria-label="返回上一頁"><span data-icon="back"></span></button><h1 class="page-title" id="pageTitle"></h1>
     <div class="brand"><div class="brand-mark" id="brandIcon"></div><div><div class="brand-name">SafeFlow <span style="color:var(--primary);font-weight:450">/</span> 智慧導航</div><div class="brand-sub">RISK-AWARE NAVIGATION</div></div></div>
-    <div class="top-right"><div class="top-note"><span class="status-dot"></span> 低干擾導航介面</div><span class="demo-pill">LIVE · RiskNav API</span><div class="account" id="account"><button type="button" class="settings-btn" id="accountBtn" aria-haspopup="menu" aria-expanded="false" aria-label="設定" title="設定"><span data-icon="gear"></span></button><div class="account-menu" id="accountMenu" role="menu" hidden><div class="who"><button type="button" class="account-avatar" id="accountAvatar" title="訂閱方案"></button><span><strong id="accountMenuName"></strong><small id="accountMenuSub"></small><button type="button" class="plan-chip" id="accountPlanChip"></button></span><span id="accountName" hidden></span></div><button type="button" role="menuitem" id="accountPlan">訂閱方案</button><button type="button" role="menuitem" id="accountFavs">管理收藏地點</button><button type="button" role="menuitem" id="accountPrimary"></button><button type="button" role="menuitem" id="accountLook"></button><button type="button" role="menuitem" id="accountIntro">再看一次功能介紹</button></div></div></div>
+    <div class="top-right"><div class="top-note"><span class="status-dot"></span> 低干擾導航介面</div><span class="demo-pill">LIVE · RiskNav API</span><div class="account" id="account"><button type="button" class="settings-btn" id="accountBtn" aria-haspopup="menu" aria-expanded="false" aria-label="設定" title="設定"><span data-icon="gear"></span></button><div class="account-menu" id="accountMenu" role="menu" hidden><div class="who"><button type="button" class="account-avatar" id="accountAvatar" title="訂閱方案"></button><span><strong id="accountMenuName"></strong><small id="accountMenuSub"></small><button type="button" class="plan-chip" id="accountPlanChip"></button></span><span id="accountName" hidden></span></div><button type="button" role="menuitem" id="accountPlan">訂閱方案</button><button type="button" role="menuitem" id="accountFavs">管理收藏地點</button><button type="button" role="menuitem" id="accountPrimary"></button><button type="button" role="menuitem" id="accountLook"></button><button type="button" role="menuitem" id="accountSafetyView"></button><button type="button" role="menuitem" id="accountIntro">再看一次功能介紹</button></div></div></div>
   </header>
   <section class="home-toolbar" id="homeToolbar" aria-label="搜尋與常用地點">
     <form class="home-search" id="homeSearchForm" role="search" autocomplete="off">
@@ -1395,7 +1413,7 @@ function renderMap() {
   $('#miniTime').textContent = r ? `${fmtMin(r.minutes)} 分` : '尚未規劃';
   $('#mapFloatingSummary').classList.toggle('has-route', !!r);
   const row = planRow(r);
-  $('#miniRisk').textContent = row?.safety?.score != null ? `安全 ${row.safety.score.toFixed(0)}` : r ? (state.analyzing ? '分析中' : '安全分數待算') : '等待路線';
+  $('#miniRisk').textContent = row?.safety?.score != null ? (num(routePct(row)) ? `安全${pctText(routePct(row))}` : `安全 ${row.safety.score.toFixed(0)}`) : r ? (state.analyzing ? '分析中' : '安全分數待算') : '等待路線';
   $('#mapHeading').textContent = headings[state.view][0];
   $('#mapRiskToggle').classList.toggle('on', state.showPoints);
   const engine = r?.engine ? r.engine.replace(/^osrm.*/i, 'OSRM 備援').replace(/^valhalla.*/i, 'Valhalla').replace(/^tomtom.*/i, 'TomTom 路況') : '';
@@ -1475,7 +1493,7 @@ function renderAll() { renderMap(); renderPanel(); renderDriveOverlay(); }
 const panelHeader = (k, t, d) => `<div class="panel-heading"><div class="panel-kicker">${k}</div><h1 class="panel-title">${t}</h1><p class="panel-desc">${d}</p></div>`;
 const needRoute = (k, t) => panelHeader(k, t, '請先輸入起點與終點並查詢路線。') + `<button class="button full" data-open="plan">前往起訖點設定 ${icon('arrow')}</button>`;
 const modeControl = () => `<div class="mode-segment" aria-label="交通方式">${[['car', 'car'], ['scooter', 'bike'], ['walk', 'walk']].map(([id, ic]) => `<button type="button" data-mode="${id}" class="${state.mode === id ? 'selected' : ''}" aria-pressed="${state.mode === id}">${icon(state.mode === id ? `${ic}Fill` : ic)}${MODE_LABEL[id]}</button>`).join('')}</div>`;
-const safetyText = row => state.analyzing ? '計算中…' : row?.safety?.score != null ? `${row.safety.score.toFixed(1)} / 100` : state.analyzeError ? '無法取得' : '資料不足';
+const safetyText = row => state.analyzing ? '計算中…' : row?.safety?.score != null ? (num(routePct(row)) ? `${pctText(routePct(row))}路線` : `${row.safety.score.toFixed(1)} / 100`) : state.analyzeError ? '無法取得' : '資料不足';
 const etaRiskText = r => {
   if (state.mode !== 'car') return '步行／機車不適用';
   if (r.eta.source === 'TomTom') return num(r.eta.historic) ? `平常此時 ${fmtMin(r.eta.historic)} 分` : '平常時間無資料';
@@ -1530,8 +1548,8 @@ function routeInsights() {
     if (r === fastest) { const gap = Math.min(...rs.filter(x => x !== r).map(x => x.minutes - r.minutes)); bits.push(gap >= 1 ? `比其他路線快 ${Math.round(gap)} 分鐘` : '時間最短'); }
     else bits.push(`比最快路線多 ${Math.max(1, Math.round(r.minutes - fastest.minutes))} 分鐘`);
     if (s != null && safest) {
-      if (r === safest) { const lead = Math.min(...safes.filter(x => x !== r).map(x => s - sc(x))); bits.push(lead >= 1 ? `安全分數最高，多 ${Math.round(lead)} 分` : '安全分數最高'); }
-      else if (sc(safest) - s >= 3) bits.push(`安全分數低 ${Math.round(sc(safest) - s)} 分`);
+      if (r === safest) { const lead = Math.min(...safes.filter(x => x !== r).map(x => s - sc(x))); bits.push('候選路線中最安全'); }
+      else if (sc(safest) - s >= 3) bits.push(sc(safest) - s >= 8 ? '安全性明顯較低' : '安全性略低');
     }
     if (spread(r) != null) { if (r === stablest) bits.push(`塞車時最多只多 ${Math.round(spread(r))} 分鐘`); else if (spread(r) >= 8) bits.push(`尖峰可能多 ${Math.round(spread(r))} 分鐘`); }
     if (r.eta.source === 'TomTom' && num(r.eta.delay) && r.eta.delay >= 2) bits.push(`目前塞車多 ${Math.round(r.eta.delay)} 分鐘`);
@@ -1570,6 +1588,40 @@ function routeInsights() {
   });
   return out;
 }
+/* 安全排名基準：2026-10-18 在雙北隨機取 180 組起訖點（步行 0.7–2.5 km、機車 2–7 km、汽車 2.5–8 km），
+   用系統實際的路線與評分算出 507 條路線的分數；以下是各交通方式「總分與三項指標」的分布（每 5% 一個值，P0…P100）。
+   評分方法或門檻改了之後要重新取樣。 */
+const SAFETY_BASELINE = {"walk":{"n":161,"score":[40.9,42.6,44.4,46.3,47.5,48.9,53.5,55.6,57.9,60,61.1,62.4,64.7,66,66.5,68.1,69.9,71.9,73.6,75.3,82],"accident":[0,23.2,35.1,41.6,47.3,51.5,56.4,57.9,64.2,69.5,73.1,75.1,79.4,82,84.4,86.3,91.7,98.2,99.6,100,100],"streetlight":[3,8.7,14.3,16,25.6,36.1,45.3,49,55.7,61.9,65.8,68.1,71,73.9,76.2,79.1,83.7,89.3,95.6,100,100],"store":[0,0,0,7.5,12.4,20.1,26.6,28.9,31.3,41.9,46,52.5,61.7,70.8,78.9,83.4,91.6,100,100,100,100]},"scooter":{"n":166,"score":[17.8,44.2,51.4,54.3,55.8,57.1,59.2,60.9,61.7,63.3,65.1,66.6,68.3,70.3,71,72.3,73.2,73.8,74.8,76.1,83.5],"accident":[0,33.8,44.6,50.7,54.3,57.5,59.3,61.5,62.9,66.2,67.2,68.9,70.5,73.5,75.4,77.3,81,84.3,93,97.5,99.8],"streetlight":[8,16.4,27,39.2,44.1,46.5,49.1,52.3,54.3,56.4,57.7,59.5,60.9,62.4,63.5,67.3,70.7,75.1,80.1,84.7,100]},"car":{"n":180,"score":[45.9,63.9,66.1,67.5,68.6,70,70.6,71.7,72.3,72.6,73.4,73.5,74.1,74.4,75.1,76.1,77.3,79.2,81.7,84.5,93],"accident":[36.3,63.9,69.2,71.2,73.4,74.6,77,79.7,81.8,83.5,85.6,86.9,88,89.1,90.1,91.5,92.2,93.3,94.7,97.4,99.9],"streetlight":[7,16.4,22.9,24.9,29.7,37.2,42.2,44.5,45.5,47.1,49.7,51.8,54.5,57.6,62.5,67,70.1,71.5,76.6,82.1,100]}};
+/* 分數 → 勝過幾 % 的同交通方式路線（在分布中內插） */
+function baselinePct(mode, key, v) {
+  const q = SAFETY_BASELINE[mode === 'transit' ? 'walk' : mode]?.[key];
+  if (!q || !num(v)) return null;
+  if (v <= q[0]) return 0; if (v >= q.at(-1)) return 100;
+  let i = 0; while (i < q.length - 1 && q.at(i + 1) < v) i++;
+  let j = i + 1; while (j < q.length - 1 && q.at(j + 1) === q.at(j) && q.at(j) <= v) j++;
+  const lo = q.at(i), hi = q.at(j), t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+  return Math.round((i + t * (j - i)) * 5);
+}
+/* 安全顯示方式：rank = 勝過幾 %＋條件標籤；score = 原本的 0～100 分＋良好／普通／偏弱（設定選單可切換） */
+const safetyView = () => { try { return localStorage.getItem('sf.safetyView') === 'score' ? 'score' : 'rank'; } catch { return 'rank'; } };
+window.addEventListener('sf-safetyview', () => renderAll());
+const routePct = row => safetyView() === 'score' ? null : baselinePct(row?.safety?.mode || state.mode, 'score', row?.safety?.score);
+/* 等級依排名：前 30% 較安全、後 30% 需留意、中間一般 */
+const pctGrade = p => !num(p) ? null : p >= 70 ? { text: '較安全', cls: 'g-good', badge: 'badge-green' } : p >= 30 ? { text: '一般', cls: 'g-mid', badge: 'badge-neutral' } : { text: '需留意', cls: 'g-low', badge: 'badge-amber' };
+const pctText = p => `勝過 ${Math.max(1, Math.min(99, p))}%`;
+/* 條件標籤：每項指標跟同交通方式的路線比，前 1/3 為好、後 1/3 為弱 */
+const FACTOR_TAGS = { accident: ['事故少', '事故中等', '事故較多'], streetlight: ['照明充足', '照明普通', '照明偏暗'], store: ['商店多', '商店普通', '商店少'] };
+function factorTags(row) {
+  const s = row?.safety; if (!s?.factors) return [];
+  const w = s.weights || {}, mode = s.mode || state.mode;
+  return [['accident', w.accident], ['streetlight', w.streetlight], ['store', w.convenienceStore]].filter(([, wt]) => wt).map(([k]) => {
+    const p = baselinePct(mode, k, s.factors[k]); if (p == null) return null;
+    const lv = p >= 67 ? 0 : p >= 33 ? 1 : 2;
+    return { key: k, text: FACTOR_TAGS[k][lv], tone: ['good', 'mid', 'weak'][lv] };
+  }).filter(Boolean);
+}
+const factorTagsHtml = row => { if (safetyView() === 'score') return ''; const t = factorTags(row); return t.length ? `<div class="factor-tags">${t.map(x => `<span class="ftag ${x.tone}">${x.text}</span>`).join('')}</div>` : ''; };
+
 /* 安全分數等級：用文字讓使用者知道大概落在哪個水準，不只看數字 */
 const safetyGrade = v => !num(v) ? null : v >= 70 ? { text: '良好', cls: 'g-good' } : v >= 40 ? { text: '普通', cls: 'g-mid' } : { text: '偏弱', cls: 'g-low' };
 const gradeTag = v => { const g = safetyGrade(v); return g ? `<em class="grade-tag ${g.cls}">${g.text}</em>` : ''; };
@@ -1577,8 +1629,9 @@ const gradeTag = v => { const g = safetyGrade(v); return g ? `<em class="grade-t
 function safetyContext() {
   const rows = state.routes.map(r => planRow(r)).filter(x => num(x?.safety?.score));
   if (rows.length < 2) return null;
-  const sc = rows.map(x => x.safety.score), spread = Math.max(...sc) - Math.min(...sc), top = Math.max(...sc);
-  if (spread > 6 || top >= 70) return null;
+  const sc = rows.map(x => x.safety.score), spread = Math.max(...sc) - Math.min(...sc);
+  const pcs = rows.map(x => routePct(x)).filter(num), top = pcs.length ? Math.max(...pcs) : null;
+  if (spread > 6 || (top != null ? top >= 70 : Math.max(...sc) >= 70)) return null;
   const avg = k => { const v = rows.map(x => x.safety.factors?.[k]).filter(num); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
   const w = rows[0].safety.weights || {};
   const weak = [
@@ -1588,7 +1641,7 @@ function safetyContext() {
   ].filter(Boolean);
   const n = rows.length === 2 ? '兩' : rows.length === 3 ? '三' : rows.length;
   return `${n}條路線的安全分數很接近（相差 ${Math.max(1, Math.round(spread))} 分以內），選哪條差別不大。` +
-    (weak.length ? `分數普遍不高，主要是這一帶${weak.join('、')}，不是某條路特別危險；` : '') +
+    (weak.length ? `排名都不算高，主要是這一帶${weak.join('、')}，不是某條路特別危險；` : '') +
     '因此推薦主要依時間與目前選擇人數來決定。';
 }
 const routeTags = tags => tags.map(([t, c]) => `<span class="small-badge ${c}">${t}</span>`).join('');
@@ -1599,7 +1652,8 @@ function comparePanel() {
   const status = car && state.carFallback ? '路況服務無法使用：時間為路網估算' : car && state.routes.some(x => x.eta.source === 'TomTom') && !state.analyzing ? '路況：TomTom 即時資料' : state.analyzing ? '安全分數計算中…' : state.analyzeError ? '安全分析失敗' : '時間與安全皆為後端資料';
   const cards = state.routes.map(r => {
     const row = planRow(r), chosen = r.index === state.selected, s = row?.safety?.score, w = r.eta.worst10;
-    const safety = s != null ? `<strong class="${s < 40 ? 'warn' : 'good'}">${s.toFixed(0)}<i>/100</i></strong>` : `<strong class="muted">${state.analyzing ? '計算中' : '–'}</strong>`;
+    const pc = routePct(row), pg = pctGrade(pc);
+    const safety = pc != null ? `<strong class="${pc < 30 ? 'warn' : 'good'}" title="安全分數 ${s.toFixed(1)}／100">${pctText(pc)}</strong>` : s != null ? `<strong class="${s < 40 ? 'warn' : 'good'}">${s.toFixed(0)}<i>/100</i></strong>` : `<strong class="muted">${state.analyzing ? '計算中' : '–'}</strong>`;
     const tt = car && r.eta.source === 'TomTom', h = r.eta.historic;
     const riskLabel = tt ? '平常此時' : '最差情況';
     const risk = !car ? '<strong class="muted">不適用</strong>' : tt ? (num(h) ? `<strong class="${r.minutes - h > 5 ? 'warn' : ''}">${fmtMin(h)}<i> 分</i></strong>` : '<strong class="muted">無資料</strong>') : num(w) ? `<strong class="${w - r.minutes > 5 ? 'warn' : ''}">${fmtMin(w)}<i> 分</i></strong>` : `<strong class="muted">${r.eta.riskStatus === 'unavailable' ? '無資料' : '樣本不足'}</strong>`;
@@ -1607,9 +1661,10 @@ function comparePanel() {
       <div class="route-card-top"><span class="route-name">路線 ${r.id}</span><span class="route-km">${fmtKm(r.distanceKm)} km</span><span class="route-tags">${routeTags(ins[r.index].tags)}</span></div>
       <div class="route-stats">
         <div class="route-stat"><small>${icon('clock')}預估時間</small><strong>${fmtMin(r.minutes)}<i> 分</i></strong></div>
-        <div class="route-stat"><small>${icon('shield')}夜間安全${s != null ? gradeTag(s) : ''}</small>${safety}</div>
+        <div class="route-stat"><small>${icon('shield')}夜間安全${pg ? '' : s != null ? gradeTag(s) : ''}</small>${safety}</div>
         <div class="route-stat"><small>${icon('alert')}${riskLabel}</small>${risk}</div>
       </div>
+      ${factorTagsHtml(row)}
       ${ins[r.index].reason ? `<p class="route-reason">${esc(ins[r.index].reason)}</p>` : ''}
     </button></article>`;
   }).join('');
@@ -1941,7 +1996,13 @@ function safetyPanel() {
   const grade = v => !num(v) ? '–' : v >= 75 ? '高' : v >= 50 ? '中' : '低';
   const factor = (label, v, weight, desc) => `<div class="detail-factor"><div><div class="factor-heading">${label}</div><div class="factor-desc">${desc}${num(weight) ? `｜權重 ${(weight * 100).toFixed(0)}%` : ''}</div></div><strong class="factor-grade ${num(v) && v < 60 ? 'warn' : 'good'}">${num(v) ? v.toFixed(0) : '不計'}</strong></div>`;
   return panelHeader('04 / SAFETY DETAILS', '安全分析詳情', `路線 ${r.id}｜分數越高越安全，地圖顯示沿線路燈、便利商店與事故密集路段。`) +
-  `<div class="surface panel-section"><div class="row space-between"><span class="muted-label">夜間綜合安全指數</span><span class="small-badge ${s.score >= 70 ? 'badge-green' : s.score >= 40 ? 'badge-neutral' : 'badge-amber'}">${safetyGrade(s.score).text}</span></div><div class="stat-hero" style="margin-top:9px"><div><strong style="color:var(--low)">${s.score.toFixed(1)}</strong><span class="muted-label"> /100</span></div><span style="color:var(--low)">${icon('shield')}</span></div><div class="score-track"><div class="score-fill" style="background:var(--low);width:${s.score}%"></div></div></div>
+  `${(() => { const pc = routePct(row), pg = pctGrade(pc); if (pc == null) return `<div class="surface panel-section"><div class="row space-between"><span class="muted-label">夜間綜合安全指數</span><span class="small-badge ${s.score >= 70 ? 'badge-green' : s.score >= 40 ? 'badge-neutral' : 'badge-amber'}">${safetyGrade(s.score).text}</span></div><div class="stat-hero" style="margin-top:9px"><div><strong style="color:var(--low)">${s.score.toFixed(1)}</strong><span class="muted-label"> /100</span></div><span style="color:var(--low)">${icon('shield')}</span></div><div class="score-track"><div class="score-fill" style="background:var(--low);width:${s.score}%"></div></div></div>`;
+    return `<div class="surface panel-section safety-hero"><div class="row space-between"><span class="muted-label">夜間安全排名</span></div>
+      <div class="safety-hero-main"><strong>${pctText(pc)}</strong><span>的雙北${MODE_LABEL[s.mode || state.mode] || ''}路線</span></div>
+      <div class="pct-track"><i style="width:${Math.max(2, pc)}%"></i><b style="left:30%"></b><b style="left:70%"></b></div>
+      <div class="pct-scale"><span>需留意</span><span>一般</span><span>較安全</span></div>
+      ${factorTagsHtml(row)}
+      <p class="safety-hero-note">安全分數 ${s.score.toFixed(1)}／100 · 和雙北 ${SAFETY_BASELINE[s.mode === 'transit' ? 'walk' : (s.mode || state.mode)]?.n || ''} 條實際規劃的同類路線比較</p></div>`; })()}
   ${(ctx => ctx ? `<p class="safety-context">${icon('info')}<span>${esc(ctx)}</span></p>` : '')(safetyContext())}
   <div class="detail-card-list">
     ${safeFactor('acc', `${icon('alert')}事故指標`, f.accident, w.accident, pts === 'loading' ? '正在比對沿線事故…' : hs ? (spots.length ? `經過 ${spots.length} 段事故密集路段` : '沿線沒有事故集中路段') : '沿線歷史事故', () => accidentDetail(r, pts, spots, hs))}
@@ -1957,7 +2018,8 @@ function safeFactor(key, label, v, weight, desc, detail) {
   const open = state.safeOpen === key;
   return `<div class="safe-factor ${open ? 'open' : ''}"><button type="button" class="detail-factor clickable" data-safe-open="${key}" aria-expanded="${open}">
       <div><div class="factor-heading">${label}</div><div class="factor-desc">${desc}${num(weight) ? `｜權重 ${(weight * 100).toFixed(0)}%` : ''}</div></div>
-      <span class="factor-right"><strong class="factor-grade ${num(v) && v < 60 ? 'warn' : 'good'}">${num(v) ? v.toFixed(0) : '–'}</strong><span class="factor-chev">${icon('back')}</span></span>
+      <span class="factor-right">${(() => { const fk = { acc: 'accident', light: 'streetlight', store: 'store' }[key], p = safetyView() === 'score' ? null : baselinePct(route() ? (planRow(route())?.safety?.mode || state.mode) : state.mode, fk, v), lv = p == null ? null : p >= 67 ? 0 : p >= 33 ? 1 : 2;
+        return `${lv != null ? `<span class="ftag ${['good', 'mid', 'weak'][lv]}">${FACTOR_TAGS[fk][lv]}</span>` : ''}<strong class="factor-grade ${lv == null ? (num(v) && v < 60 ? 'warn' : 'good') : lv === 2 ? 'warn' : lv === 0 ? 'good' : 'mid'}">${num(v) ? v.toFixed(0) : '–'}</strong>`; })()}<span class="factor-chev">${icon('back')}</span></span>
     </button>${open ? `<div class="safe-detail">${detail()}</div>` : ''}</div>`;
 }
 const ptsReady = pts => pts && typeof pts === 'object' && !pts.error;
@@ -1997,8 +2059,7 @@ function accidentDetail(r, pts, spots, hs) {
   const hot = spots.length
     ? `<div class="safe-sub">事故密集路段<small>點選可在地圖上定位</small></div>` + spots.map((h, i) => { const road = roadAt(r, (h.fromM + h.toM) / 2); return `<button type="button" class="info-item" data-focus="hot:${i}"><span class="info-dot hot"></span><span><strong>${road ? esc(road) : `事故密集路段 ${i + 1}`}</strong><small>${kmRange(h.fromM, h.toM)}</small></span>${icon('pin')}</button>`; }).join('')
     : `<p class="info-empty">${hs ? '沿線事故分布平均，沒有特別集中的路段。' : '尚未取得路段資料。'}</p>`;
-  const n = pts.accidents?.total ?? accFeatures(pts).length;
-  return hot + (accFeatures(pts).length ? tableToggle('acc', '沿線事故明細', `${n.toLocaleString()} 筆`) + (state.accTable ? accidentTable(pts) : '') : '<p class="info-empty">沿線沒有事故紀錄。</p>');
+  return hot;
 }
 
 /* 路燈：密度摘要 + 路燈較少的路段（沿線最長的無路燈空隙） */
@@ -2699,6 +2760,11 @@ api('/api/health', { timeout: 6000 }).then(() => { state.apiOnline = true; }).ca
   var primary=document.getElementById('accountPrimary');
   primary.textContent=guest?'登入或註冊帳號':'登出';
   primary.addEventListener('click',function(){ if(guest){ S.clear(); location.href=S.WELCOME_PAGE+'#auth'; } else S.logout(); });
+  var sv=document.getElementById('accountSafetyView');
+  function getSV(){ try{ return localStorage.getItem('sf.safetyView')==='score'?'score':'rank'; }catch(e){ return 'rank'; } }
+  function showSV(){ sv.textContent='安全顯示：'+(getSV()==='score'?'分數（0～100）':'排名（勝過幾 %）'); }
+  showSV();
+  sv.addEventListener('click',function(e){ e.stopPropagation(); try{ localStorage.setItem('sf.safetyView', getSV()==='score'?'rank':'score'); }catch(err){} showSV(); window.dispatchEvent(new Event('sf-safetyview')); });
   var look=document.getElementById('accountLook');
   function showLook(){ look.textContent='外觀：'+S.APPEARANCES[S.appearance()]; }
   showLook();
